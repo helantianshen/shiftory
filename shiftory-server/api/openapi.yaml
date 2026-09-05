@@ -1,0 +1,728 @@
+openapi: 3.1.0
+info:
+  title: Shiftory API
+  version: 1.0.0
+  description: 排班协同、导入预览与团队日历 API。业务接口统一返回 `{data, requestId}`，错误返回 `{error, requestId}`。
+servers:
+  - url: http://localhost:8080/api/v1
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Preferences
+  - name: Workspaces
+  - name: Members
+  - name: Shifts
+  - name: Schedules
+  - name: Calendar
+  - name: Imports
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      operationId: login
+      description: 返回短期 Access JWT，并设置 HttpOnly Refresh JWT Cookie 与可读 CSRF Cookie。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/AuthSuccess' }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      operationId: refresh
+      description: 轮换 Refresh JWT；必须同时发送 Refresh Cookie、CSRF Cookie 与匹配的 X-CSRF-Token。
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200': { $ref: '#/components/responses/AuthSuccess' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      security: []
+      operationId: logout
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '403': { $ref: '#/components/responses/Error' }
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      responses:
+        '200': { $ref: '#/components/responses/UserSuccess' }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/profile:
+    patch:
+      tags: [Auth]
+      operationId: updateProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 80 }
+                avatarUrl: { type: string, maxLength: 1024 }
+      responses:
+        '200': { $ref: '#/components/responses/UserSuccess' }
+        '400': { $ref: '#/components/responses/Error' }
+  /auth/password:
+    put:
+      tags: [Auth]
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 12 }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '400': { $ref: '#/components/responses/Error' }
+  /preferences:
+    get:
+      tags: [Preferences]
+      operationId: getPreferences
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+    put:
+      tags: [Preferences]
+      operationId: updatePreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Preference' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /invitations/accept:
+    post:
+      tags: [Members]
+      operationId: acceptInvitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties: { token: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '409': { $ref: '#/components/responses/Error' }
+  /workspaces:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspaces
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+    post:
+      tags: [Workspaces]
+      operationId: createWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    patch:
+      tags: [Workspaces]
+      operationId: updateWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '403': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [Workspaces]
+      operationId: deleteWorkspace
+      parameters:
+        - name: confirm
+          in: query
+          required: true
+          schema: { type: string }
+          description: 必须与工作区名称一致。
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '409': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/transfer:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    post:
+      tags: [Workspaces]
+      operationId: transferWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties: { userId: { type: integer, format: int64 } }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/members:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Members]
+      operationId: listMembers
+      description: 包含当前月排班完整度和最近一次完成导入时间。
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/members/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      tags: [Members]
+      operationId: updateMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role, status]
+              properties:
+                role: { $ref: '#/components/schemas/Role' }
+                status: { $ref: '#/components/schemas/MemberStatus' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '403': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/invitations:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Members]
+      operationId: listInvitations
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+    post:
+      tags: [Members]
+      operationId: createInvitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/invitations/{invitationId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - name: invitationId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    delete:
+      tags: [Members]
+      operationId: revokeInvitation
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/shifts:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Shifts]
+      operationId: listShifts
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+    post:
+      tags: [Shifts]
+      operationId: createShift
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShiftInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/shifts/{shiftId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - name: shiftId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Shifts]
+      operationId: updateShift
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShiftInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/schedules/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Schedules]
+      operationId: listSchedules
+      parameters:
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/schedules/{userId}/{date}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/Date'
+    put:
+      tags: [Schedules]
+      operationId: upsertSchedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '409': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/schedules/{userId}/{date}/history:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/Date'
+    get:
+      tags: [Schedules]
+      operationId: getScheduleHistory
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/schedules/batch:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    post:
+      tags: [Schedules]
+      operationId: batchSchedules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ScheduleInput'
+                - type: object
+                  required: [userId, dates]
+                  properties:
+                    userId: { type: integer, format: int64 }
+                    dates:
+                      type: array
+                      maxItems: 366
+                      items: { type: string, format: date }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/calendar:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Calendar]
+      operationId: getCalendar
+      parameters:
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+        - name: memberIds
+          in: query
+          schema: { type: string, example: '1,2,3' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/overview:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Calendar]
+      operationId: getOverview
+      parameters:
+        - name: date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/audits:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Workspaces]
+      operationId: listAudits
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '403': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/imports:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Imports]
+      operationId: listImports
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+    post:
+      tags: [Imports]
+      operationId: createSpreadsheetImport
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/ImportUpload' }
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+        '400': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/imports/image:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    post:
+      tags: [Imports]
+      operationId: createImageImport
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ImportUpload'
+                - type: object
+                  properties:
+                    instructions: { type: string, maxLength: 2000 }
+                    mappingHints: { type: string, description: JSON object mapping source labels to shift codes }
+      responses:
+        '202': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/imports/template.xlsx:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    get:
+      tags: [Imports]
+      operationId: downloadImportTemplate
+      responses:
+        '200':
+          description: 固定格式 Excel 模板
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+  /workspaces/{workspaceId}/imports/{importId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    get:
+      tags: [Imports]
+      operationId: getImport
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/imports/{importId}/file:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    get:
+      tags: [Imports]
+      operationId: downloadImportFile
+      responses:
+        '200':
+          description: 原始导入文件，仅上传者或管理员可访问。
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+  /workspaces/{workspaceId}/imports/{importId}/decisions:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    put:
+      tags: [Imports]
+      operationId: updateImportDecisions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decisions]
+              properties:
+                decisions:
+                  type: array
+                  items: { $ref: '#/components/schemas/ImportDecision' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/imports/{importId}/items/{itemId}:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+      - name: itemId
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+    put:
+      tags: [Imports]
+      operationId: correctImportItem
+      description: 人工修正不确定、无效、缺失或冲突草稿，并重新计算预览分类与版本基线。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '409': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/imports/{importId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    post:
+      tags: [Imports]
+      operationId: cancelImport
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /workspaces/{workspaceId}/imports/{importId}/commit:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    post:
+      tags: [Imports]
+      operationId: commitImport
+      description: 在一个事务中提交所有选中项；未决冲突或陈旧预览会整体拒绝。
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '409': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/imports/{importId}/rollback:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    post:
+      tags: [Imports]
+      operationId: rollbackImport
+      description: 全有或全无恢复导入前快照；任一排班后续被修改即整体拒绝。
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '409': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    WorkspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    ImportId:
+      name: importId
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    Date:
+      name: date
+      in: path
+      required: true
+      schema: { type: string, format: date }
+    StartDate:
+      name: start
+      in: query
+      required: true
+      schema: { type: string, format: date }
+    EndDate:
+      name: end
+      in: query
+      required: true
+      schema: { type: string, format: date }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+  responses:
+    Success:
+      description: 成功
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+    UserSuccess:
+      description: 用户资料
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/SuccessEnvelope'
+              - type: object
+                properties: { data: { $ref: '#/components/schemas/User' } }
+    AuthSuccess:
+      description: 认证成功
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/SuccessEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    required: [accessToken, accessExpiresAt]
+                    properties:
+                      accessToken: { type: string }
+                      accessExpiresAt: { type: string, format: date-time }
+                      user: { $ref: '#/components/schemas/User' }
+    Error:
+      description: 失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  schemas:
+    SuccessEnvelope:
+      type: object
+      required: [data, requestId]
+      properties:
+        data: {}
+        requestId: { type: string, format: uuid }
+    ErrorEnvelope:
+      type: object
+      required: [error, requestId]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+        requestId: { type: string, format: uuid }
+    RegisterRequest:
+      type: object
+      required: [username, email, displayName, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        email: { type: string, format: email }
+        displayName: { type: string, minLength: 1, maxLength: 80 }
+        password: { type: string, minLength: 12 }
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login: { type: string }
+        password: { type: string }
+    User:
+      type: object
+      required: [id, username, email, displayName]
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        avatarUrl: { type: string }
+    Preference:
+      type: object
+      required: [theme]
+      properties:
+        currentWorkspaceId: { type: [integer, 'null'], format: int64 }
+        theme: { type: string, enum: [mint, sky, lilac, sakura, amber, graphite] }
+    WorkspaceInput:
+      type: object
+      required: [name, timezone]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        timezone: { type: string, example: Asia/Shanghai }
+    Role: { type: string, enum: [OWNER, ADMIN, MEMBER] }
+    MemberStatus: { type: string, enum: [ACTIVE, DISABLED, REMOVED] }
+    ShiftInput:
+      type: object
+      required: [name, code, crossDay, displayColor]
+      properties:
+        name: { type: string, maxLength: 80 }
+        code: { type: string, maxLength: 64 }
+        startTime: { type: [string, 'null'], pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' }
+        endTime: { type: [string, 'null'], pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' }
+        crossDay: { type: boolean }
+        displayColor: { type: string }
+        enabled: { type: boolean, default: true }
+        sortOrder: { type: integer, default: 0 }
+        aliases:
+          type: array
+          items: { type: string, maxLength: 80 }
+    ScheduleSegment:
+      type: object
+      required: [type, crossDay]
+      properties:
+        type: { type: string, enum: [SHIFT, TIME_RANGE] }
+        shiftId: { type: integer, format: int64 }
+        startTime: { type: string, pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' }
+        endTime: { type: string, pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' }
+        crossDay: { type: boolean }
+    ScheduleInput:
+      type: object
+      required: [status, segments]
+      properties:
+        status: { type: string, enum: [WORKING, REST] }
+        note: { type: string, maxLength: 1000 }
+        version: { type: integer, format: int64, minimum: 0 }
+        segments:
+          type: array
+          maxItems: 8
+          items: { $ref: '#/components/schemas/ScheduleSegment' }
+    ImportUpload:
+      type: object
+      required: [targetUserId, periodStart, periodEnd, file]
+      properties:
+        targetUserId: { type: integer, format: int64 }
+        periodStart: { type: string, format: date }
+        periodEnd: { type: string, format: date }
+        file: { type: string, format: binary }
+    ImportDecision:
+      type: object
+      required: [itemId, decision]
+      properties:
+        itemId: { type: integer, format: int64 }
+        decision: { type: string, enum: [KEEP_EXISTING, USE_IMPORTED, SKIP] }
