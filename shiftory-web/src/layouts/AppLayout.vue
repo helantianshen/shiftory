@@ -5,9 +5,13 @@ import { Bell, ChevronDown, Menu, Sparkles } from "lucide-vue-next";
 import NavigationMenu from "@/components/NavigationMenu.vue";
 import { useSessionStore, type ThemeName } from "@/stores/session";
 import { sidebarThemeColor } from "@/styles/themes";
+import { api } from "@/api/client";
+import { useQuery } from "@tanstack/vue-query";
 const session = useSessionStore();
 const route = useRoute();
 const router = useRouter();
+const workspaceScoped = computed(() => ['/overview', '/calendar', '/admin/schedules', '/admin/members', '/admin/workspace', '/admin/imports'].some((path) => route.path === path || route.path.startsWith(`${path}/`)));
+const pendingInvitations = useQuery({ queryKey: ["my-invitations"], queryFn: () => api.get<{items: unknown[]}>("/invitations/mine") });
 const sidebarOpen = ref(false);
 const themes: { value: ThemeName; label: string; color: string }[] = [
   { value: "mint", label: "薄荷", color: "#3aa981" },
@@ -51,7 +55,7 @@ async function signOut() {
           <Menu />
         </button>
         <el-dropdown
-          v-if="session.workspaces.length"
+          v-if="session.workspaces.length && workspaceScoped"
           trigger="click"
           @command="session.selectWorkspace"
           ><button class="workspace-switcher">
@@ -68,7 +72,7 @@ async function signOut() {
             ></template
           ></el-dropdown
         >
-        <span v-else class="workspace-switcher">尚未创建工作区</span>
+        <span v-else-if="workspaceScoped" class="workspace-switcher">尚未创建工作区</span>
         <div class="topbar-spacer" />
         <el-dropdown
           trigger="click"
@@ -89,8 +93,8 @@ async function signOut() {
             ></template
           ></el-dropdown
         >
-        <button class="icon-button" aria-label="通知">
-          <Bell :size="18" />
+        <button class="icon-button" aria-label="通知" @click="router.push('/invitations')">
+          <el-badge :value="pendingInvitations.data.value?.items.length || 0" :hidden="!pendingInvitations.data.value?.items.length"><Bell :size="18" /></el-badge>
         </button>
         <el-dropdown
           trigger="click"

@@ -66,6 +66,7 @@ type importItemRecord struct {
 }
 
 func (s *server) createImport(c *gin.Context) {
+	s.logger.DebugContext(c.Request.Context(), "spreadsheet upload received", "path", c.Request.URL.Path)
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
 		return
@@ -147,6 +148,7 @@ func (s *server) createImport(c *gin.Context) {
 		writeImportValidationFailure(c, err)
 		return
 	}
+	s.logger.DebugContext(c.Request.Context(), "spreadsheet upload normalized", "workspace_id", workspaceID, "target_user_id", targetUserID, "filename", filepath.Base(header.Filename), "bytes", len(content), "entry_count", len(entries))
 	for _, entry := range entries {
 		if entry.Date.String() < periodStart.String() || entry.Date.String() > periodEnd.String() {
 			failure(c, http.StatusBadRequest, "DATE_OUT_OF_RANGE", "文件中存在超出声明周期的日期", gin.H{"date": entry.Date.String()})
@@ -256,6 +258,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, jobID, entry.Date.String(), itemType, payload,
 		return
 	}
 	committed = true
+	s.logger.InfoContext(c.Request.Context(), "spreadsheet import job created", "workspace_id", workspaceID, "job_id", jobID, "target_user_id", targetUserID, "filename", filepath.Base(header.Filename), "bytes", len(content), "item_count", len(periodDates), "conflict_count", conflictCount, "invalid_count", invalidCount)
 	s.recordAudit(c, workspaceID, currentUserID(c), "IMPORT_PREVIEW", "import_job", jobID, gin.H{"targetUserId": targetUserID, "itemCount": len(periodDates), "conflictCount": conflictCount})
 	success(c, http.StatusCreated, gin.H{"id": jobID, "state": "NEEDS_REVIEW", "itemCount": len(periodDates), "conflictCount": conflictCount, "invalidCount": invalidCount})
 }
@@ -278,7 +281,9 @@ func importDates(start, end schedule.Date) ([]schedule.Date, error) {
 }
 
 func (s *server) createImageImport(c *gin.Context) {
+	s.logger.DebugContext(c.Request.Context(), "image upload received", "path", c.Request.URL.Path)
 	if !s.config.AIEnabled {
+		s.logger.WarnContext(c.Request.Context(), "image upload rejected because AI is disabled")
 		failure(c, http.StatusServiceUnavailable, "AI_DISABLED", "图片 AI 导入功能未启用", nil)
 		return
 	}
@@ -348,12 +353,16 @@ func (s *server) createImageImport(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_FILE_SIGNATURE", "截图扩展名与实际格式不一致", nil)
 		return
 	}
+	s.logger.DebugContext(c.Request.Context(), "image upload validated", "workspace_id", workspaceID, "target_user_id", targetUserID,
+		"filename", filepath.Base(header.Filename), "bytes", len(content), "width", imageConfig.Width, "height", imageConfig.Height,
+		"format", imageFormat, "instructions_length", len([]rune(instructions)), "mapping_hint_count", len(mappingHints))
 	mediaType := map[string]string{"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}[imageFormat]
 	storageKey := filepath.ToSlash(filepath.Join("imports", uuid.NewString()+ext))
 	if err := s.store.Put(c.Request.Context(), storageKey, bytes.NewReader(content)); err != nil {
 		failure(c, http.StatusInternalServerError, "STORAGE_ERROR", "无法保存排班截图", nil)
 		return
 	}
+	s.logger.DebugContext(c.Request.Context(), "image upload stored", "workspace_id", workspaceID, "storage_key", storageKey, "bytes", len(content))
 	committed := false
 	defer func() {
 		if !committed {
@@ -394,6 +403,7 @@ VALUES (?, ?, ?, ?, ?, ?)`, jobID, storageKey, filepath.Base(header.Filename), m
 		return
 	}
 	committed = true
+	s.logger.InfoContext(c.Request.Context(), "image import job created", "workspace_id", workspaceID, "job_id", jobID, "target_user_id", targetUserID, "filename", filepath.Base(header.Filename), "bytes", len(content))
 	s.recordAudit(c, workspaceID, currentUserID(c), "IMAGE_IMPORT_CREATED", "import_job", jobID, gin.H{"targetUserId": targetUserID})
 	if s.importWakeup != nil {
 		s.importWakeup()
@@ -1295,13 +1305,13 @@ func equalUintPtr(left, right *uint64) bool {
 func queryScheduleTx(ctx context.Context, tx *sql.Tx, workspaceID, userID uint64, date schedule.Date, lock bool) (schedule.Day, bool, error) {
 	query := `
 SELECT id, status, source_type, source_import_id, note, version, created_by
-FROM schedule_days WHERE workspace_id = ? AND user_id = ? AND work_date = ?`
+FROM schedule_days WHERE user_id = ? AND work_date = ?`
 	if lock {
 		query += " FOR UPDATE"
 	}
 	day := schedule.Day{WorkspaceID: workspaceID, UserID: userID, WorkDate: date}
 	var importID sql.NullInt64
-	err := tx.QueryRowContext(ctx, query, workspaceID, userID, date.String()).Scan(&day.ID, &day.Status, &day.SourceType, &importID, &day.Note, &day.Version, &day.CreatedBy)
+	err := tx.QueryRowContext(ctx, query, userID, date.String()).Scan(&day.ID, &day.Status, &day.SourceType, &importID, &day.Note, &day.Version, &day.CreatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return schedule.Day{}, false, nil
 	}

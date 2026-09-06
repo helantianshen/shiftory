@@ -655,3 +655,5 @@ a {
     flex-direction: column;
   }
 }
+
+.calendar-cell.overdue { border-color: var(--danger, #e05a5a); background: color-mix(in srgb, var(--danger, #e05a5a) 8%, var(--surface)); }

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 
 const userIDKey = "authenticatedUserID"
 const requestIDKey = "requestID"
+const errorCodeKey = "errorCode"
 
 type Dependencies struct {
 	DB           *sql.DB
@@ -30,6 +32,7 @@ type Dependencies struct {
 	Tokens       *auth.TokenManager
 	Store        storage.Store
 	ImportWakeup func()
+	Logger       *slog.Logger
 }
 
 type server struct {
@@ -39,6 +42,7 @@ type server struct {
 	authService  *auth.Service
 	store        storage.Store
 	importWakeup func()
+	logger       *slog.Logger
 }
 
 func New(deps Dependencies) (http.Handler, error) {
@@ -53,10 +57,14 @@ func New(deps Dependencies) (http.Handler, error) {
 			return nil, err
 		}
 	}
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	s := &server{
 		db: deps.DB, config: deps.Config, tokens: deps.Tokens,
 		authService: auth.NewService(auth.NewMySQLRepository(deps.DB), auth.NewPasswordHasher(auth.DefaultPasswordParams()), deps.Tokens),
-		store:       store, importWakeup: deps.ImportWakeup,
+		store:       store, importWakeup: deps.ImportWakeup, logger: logger,
 	}
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -77,6 +85,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	protected := v1.Group("")
 	protected.Use(s.authenticate())
 	protected.POST("/invitations/accept", s.acceptInvitation)
+	protected.GET("/invitations/mine", s.listMyInvitations)
 	protected.GET("/preferences", s.getPreferences)
 	protected.PUT("/preferences", s.updatePreferences)
 	protected.GET("/workspaces", s.listWorkspaces)
@@ -119,12 +128,24 @@ func (s *server) requestContext() gin.HandlerFunc {
 		requestID := uuid.NewString()
 		c.Set(requestIDKey, requestID)
 		c.Header("X-Request-ID", requestID)
+		started := time.Now()
 		if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 		} else {
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 12<<20)
 		}
 		c.Next()
+		attributes := []any{
+			"request_id", requestID,
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status", c.Writer.Status(),
+			"duration_ms", time.Since(started).Milliseconds(),
+		}
+		if code, exists := c.Get(errorCodeKey); exists {
+			attributes = append(attributes, "error_code", code)
+		}
+		s.logger.InfoContext(c.Request.Context(), "http request", attributes...)
 	}
 }
 
@@ -413,6 +434,7 @@ func userResponse(user auth.User) gin.H {
 func success(c *gin.Context, status int, data any) { c.JSON(status, gin.H{"data": data}) }
 
 func failure(c *gin.Context, status int, code, message string, details any) {
+	c.Set(errorCodeKey, code)
 	requestID, _ := c.Get(requestIDKey)
 	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": message, "details": details, "requestId": requestID}})
 }

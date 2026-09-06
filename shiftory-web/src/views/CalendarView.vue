@@ -56,6 +56,7 @@ const days = computed(
         (!onlyMissing.value || day.missing > 0),
     ) ?? [],
 );
+const today = computed(() => dayjs().format("YYYY-MM-DD"));
 const memberName = (id: number) =>
   members.data.value?.items.find((item) => item.id === id)?.displayName ??
   `成员 #${id}`;
@@ -121,7 +122,7 @@ function scheduleDetail(member: CalendarMemberDay) {
           v-for="day in days"
           :key="day.date"
           class="calendar-cell"
-          :class="{ 'all-rest': day.allRest, missing: day.missing > 0 }"
+          :class="{ 'all-rest': day.allRest, missing: day.missing > 0, overdue: day.date < today }"
           @click="open(day)"
         >
           <span class="date">{{ dayjs(day.date).date() }}</span>

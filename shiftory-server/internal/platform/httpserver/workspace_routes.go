@@ -185,8 +185,9 @@ WHERE m.workspace_id = ? ORDER BY FIELD(m.role, 'OWNER', 'ADMIN', 'MEMBER'), u.d
 }
 
 type invitationRequest struct {
-	Email string `json:"email" binding:"required"`
-	Role  string `json:"role" binding:"required"`
+	Email    string `json:"email"`
+	Username string `json:"username"`
+	Role     string `json:"role" binding:"required"`
 }
 
 func (s *server) createInvitation(c *gin.Context) {
@@ -200,14 +201,29 @@ func (s *server) createInvitation(c *gin.Context) {
 		return
 	}
 	var request invitationRequest
-	if err := c.ShouldBindJSON(&request); err != nil || (request.Role != "MEMBER" && request.Role != "ADMIN") {
+	if err := c.ShouldBindJSON(&request); err != nil || (request.Role != "MEMBER" && request.Role != "ADMIN") || (strings.TrimSpace(request.Email) == "" && strings.TrimSpace(request.Username) == "") || (strings.TrimSpace(request.Email) != "" && strings.TrimSpace(request.Username) != "") {
 		failure(c, http.StatusBadRequest, "INVALID_INVITATION", "邀请信息无效", nil)
 		return
 	}
-	address, err := mail.ParseAddress(strings.TrimSpace(request.Email))
-	if err != nil {
-		failure(c, http.StatusBadRequest, "INVALID_EMAIL", "邮箱无效", nil)
-		return
+	var inviteEmail, inviteUsername string
+	if strings.TrimSpace(request.Username) != "" {
+		inviteUsername = strings.TrimSpace(request.Username)
+		err := s.db.QueryRowContext(c.Request.Context(), `SELECT username, email_normalized FROM users WHERE username_normalized = LOWER(?) AND status = 'ACTIVE'`, inviteUsername).Scan(&inviteUsername, &inviteEmail)
+		if errors.Is(err, sql.ErrNoRows) {
+			failure(c, http.StatusNotFound, "USER_NOT_FOUND", "用户名不存在或已停用", nil)
+			return
+		}
+		if err != nil {
+			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询用户", nil)
+			return
+		}
+	} else {
+		address, err := mail.ParseAddress(strings.TrimSpace(request.Email))
+		if err != nil {
+			failure(c, http.StatusBadRequest, "INVALID_EMAIL", "邮箱无效", nil)
+			return
+		}
+		inviteEmail = strings.ToLower(address.Address)
 	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -219,21 +235,26 @@ func (s *server) createInvitation(c *gin.Context) {
 	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
 	result, err := s.db.ExecContext(c.Request.Context(), `
 INSERT INTO workspace_invitations (workspace_id, email_normalized, role, token_hash, status, invited_by, expires_at)
-VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`, workspaceID, strings.ToLower(address.Address), request.Role, hash[:], currentUserID(c), expiresAt)
+VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`, workspaceID, inviteEmail, request.Role, hash[:], currentUserID(c), expiresAt)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法创建邀请", nil)
 		return
 	}
 	id, _ := result.LastInsertId()
-	s.recordAudit(c, workspaceID, currentUserID(c), "INVITATION_CREATED", "invitation", id, gin.H{"email": address.Address, "role": request.Role})
-	success(c, http.StatusCreated, gin.H{"id": uint64(id), "token": token, "email": address.Address, "role": request.Role, "expiresAt": expiresAt})
+	s.recordAudit(c, workspaceID, currentUserID(c), "INVITATION_CREATED", "invitation", id, gin.H{"email": inviteEmail, "username": inviteUsername, "role": request.Role})
+	resultData := gin.H{"id": uint64(id), "token": token, "email": inviteEmail, "role": request.Role, "expiresAt": expiresAt}
+	if inviteUsername != "" {
+		resultData["username"] = inviteUsername
+	}
+	success(c, http.StatusCreated, resultData)
 }
 
 func (s *server) acceptInvitation(c *gin.Context) {
 	var request struct {
-		Token string `json:"token" binding:"required"`
+		Token        string `json:"token"`
+		InvitationID uint64 `json:"invitationId"`
 	}
-	if err := c.ShouldBindJSON(&request); err != nil {
+	if err := c.ShouldBindJSON(&request); err != nil || (request.Token == "" && request.InvitationID == 0) {
 		failure(c, http.StatusBadRequest, "INVALID_INVITATION", "邀请令牌无效", nil)
 		return
 	}
@@ -248,9 +269,13 @@ func (s *server) acceptInvitation(c *gin.Context) {
 	var invitationID, workspaceID uint64
 	var email, role, status string
 	var expiresAt time.Time
-	err = tx.QueryRowContext(c.Request.Context(), `
-SELECT id, workspace_id, email_normalized, role, status, expires_at
-FROM workspace_invitations WHERE token_hash = ? FOR UPDATE`, hash[:]).Scan(&invitationID, &workspaceID, &email, &role, &status, &expiresAt)
+	query := `SELECT id, workspace_id, email_normalized, role, status, expires_at FROM workspace_invitations WHERE token_hash = ? FOR UPDATE`
+	args := []any{hash[:]}
+	if request.InvitationID != 0 {
+		query = `SELECT id, workspace_id, email_normalized, role, status, expires_at FROM workspace_invitations WHERE id = ? FOR UPDATE`
+		args = []any{request.InvitationID}
+	}
+	err = tx.QueryRowContext(c.Request.Context(), query, args...).Scan(&invitationID, &workspaceID, &email, &role, &status, &expiresAt)
 	if err != nil || status != "PENDING" || time.Now().UTC().After(expiresAt) {
 		failure(c, http.StatusConflict, "INVITATION_UNAVAILABLE", "邀请不存在、已处理或已过期", nil)
 		return

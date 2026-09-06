@@ -242,9 +242,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [email, role]
+              required: [role]
               properties:
                 email: { type: string, format: email }
+                username: { type: string, minLength: 3, maxLength: 64 }
                 role: { $ref: '#/components/schemas/Role' }
       responses:
         '201': { $ref: '#/components/responses/Success' }

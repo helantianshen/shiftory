@@ -9,6 +9,27 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func (s *server) listMyInvitations(c *gin.Context) {
+	rows, err := s.db.QueryContext(c.Request.Context(), `SELECT i.id, i.workspace_id, w.name, i.role, i.expires_at FROM workspace_invitations i JOIN users u ON u.email_normalized = i.email_normalized JOIN workspaces w ON w.id = i.workspace_id WHERE u.id = ? AND i.status = 'PENDING' AND i.expires_at > UTC_TIMESTAMP(6) ORDER BY i.created_at DESC`, currentUserID(c))
+	if err != nil {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询待处理邀请", nil)
+		return
+	}
+	defer rows.Close()
+	items := make([]gin.H, 0)
+	for rows.Next() {
+		var id, workspaceID uint64
+		var name, role string
+		var expires time.Time
+		if err := rows.Scan(&id, &workspaceID, &name, &role, &expires); err != nil {
+			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取邀请", nil)
+			return
+		}
+		items = append(items, gin.H{"id": id, "workspaceId": workspaceID, "workspaceName": name, "role": role, "expiresAt": expires})
+	}
+	success(c, http.StatusOK, gin.H{"items": items})
+}
+
 func (s *server) listInvitations(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -23,8 +44,9 @@ func (s *server) listInvitations(c *gin.Context) {
 	}
 	_, _ = s.db.ExecContext(c.Request.Context(), `UPDATE workspace_invitations SET status = 'EXPIRED' WHERE workspace_id = ? AND status = 'PENDING' AND expires_at < UTC_TIMESTAMP(6)`, workspaceID)
 	rows, err := s.db.QueryContext(c.Request.Context(), `
-SELECT id, email_normalized, role, status, invited_by, expires_at, accepted_by, accepted_at, created_at
-FROM workspace_invitations WHERE workspace_id = ? ORDER BY created_at DESC`, workspaceID)
+SELECT i.id, i.email_normalized, COALESCE(u.username, ''), i.role, i.status, i.invited_by, i.expires_at, i.accepted_by, i.accepted_at, i.created_at
+FROM workspace_invitations i LEFT JOIN users u ON u.email_normalized = i.email_normalized
+WHERE i.workspace_id = ? ORDER BY i.created_at DESC`, workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询邀请", nil)
 		return
@@ -33,15 +55,18 @@ FROM workspace_invitations WHERE workspace_id = ? ORDER BY created_at DESC`, wor
 	items := make([]gin.H, 0)
 	for rows.Next() {
 		var id, invitedBy uint64
-		var email, role, status string
+		var email, username, role, status string
 		var expiresAt, createdAt time.Time
 		var acceptedBy sql.NullInt64
 		var acceptedAt sql.NullTime
-		if err := rows.Scan(&id, &email, &role, &status, &invitedBy, &expiresAt, &acceptedBy, &acceptedAt, &createdAt); err != nil {
+		if err := rows.Scan(&id, &email, &username, &role, &status, &invitedBy, &expiresAt, &acceptedBy, &acceptedAt, &createdAt); err != nil {
 			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取邀请", nil)
 			return
 		}
 		item := gin.H{"id": id, "email": email, "role": role, "status": status, "invitedBy": invitedBy, "expiresAt": expiresAt, "createdAt": createdAt}
+		if username != "" {
+			item["username"] = username
+		}
 		if acceptedBy.Valid {
 			item["acceptedBy"] = uint64(acceptedBy.Int64)
 			item["acceptedAt"] = acceptedAt.Time

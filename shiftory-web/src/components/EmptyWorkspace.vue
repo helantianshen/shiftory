@@ -5,7 +5,7 @@ import { Building2 } from "lucide-vue-next";
 import { api } from "@/api/client";
 import { useSessionStore, type Workspace } from "@/stores/session";
 const session = useSessionStore();
-const name = ref("我的排班空间");
+const name = ref("我的团队工作区");
 const timezone = ref("Asia/Shanghai");
 const saving = ref(false);
 async function createWorkspace() {

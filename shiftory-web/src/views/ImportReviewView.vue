@@ -19,6 +19,7 @@ import {
 const session = useSessionStore();
 const route = useRoute();
 const router = useRouter();
+const readOnly = computed(() => route.path.startsWith('/admin/imports'));
 const queryClient = useQueryClient();
 const jobID = Number(route.params.id);
 const workspaceID = computed(() => session.currentWorkspace!.id);
@@ -189,12 +190,12 @@ function issueLabel(item: ImportItem) {
   >
     <el-button @click="download">下载原文件</el-button>
     <el-button
-      v-if="['PENDING', 'PARSING', 'NEEDS_REVIEW'].includes(job?.state ?? '')"
+      v-if="!readOnly && ['PENDING', 'PARSING', 'NEEDS_REVIEW'].includes(job?.state ?? '')"
       @click="cancel"
       >取消任务</el-button
     >
     <el-button
-      v-if="job?.state === 'COMPLETED'"
+      v-if="!readOnly && job?.state === 'COMPLETED'"
       type="danger"
       plain
       @click="rollback"

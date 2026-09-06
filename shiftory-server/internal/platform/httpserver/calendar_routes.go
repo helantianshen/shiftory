@@ -103,7 +103,9 @@ type memberPeriod struct {
 }
 
 func (p memberPeriod) contains(date schedule.Date) bool {
-	return p.Joined.String() <= date.String() && (p.Left == nil || p.Left.String() >= date.String())
+	// Personal schedules are global; current team members are evaluated for all
+	// calendar dates. A left date remains an upper boundary for historical members.
+	return p.Left == nil || p.Left.String() >= date.String()
 }
 
 func (p memberPeriod) overlaps(start, end schedule.Date) bool {

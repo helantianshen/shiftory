@@ -24,7 +24,7 @@ const query = useQuery({
   refetchInterval: 10000,
 });
 const title = computed(() =>
-  route.meta.allImports ? "全部导入记录" : "我的导入记录",
+  route.meta.allImports ? "团队导入记录" : "我的导入记录",
 );
 function stateLabel(state: string) {
   return (
@@ -47,8 +47,8 @@ function stateLabel(state: string) {
     ><PageHeader
       eyebrow="IMPORT HISTORY"
       :title="title"
-      description="查看解析进度、冲突数量、原文件和安全撤销状态。"
-      ><el-button type="primary" @click="router.push('/import')"
+      :description="route.meta.allImports ? '查看当前工作区成员的导入记录（只读）。' : '查看你提交的导入记录和处理状态。'"
+      ><el-button v-if="!route.meta.allImports" type="primary" @click="router.push('/import')"
         >新建导入</el-button
       ></PageHeader
     >

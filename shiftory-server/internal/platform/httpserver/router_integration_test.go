@@ -127,7 +127,8 @@ func TestManagementAndPreferenceAPIWorkflow(t *testing.T) {
 
 	workspace := apiRequest(t, router, http.MethodPost, "/api/v1/workspaces", alice.AccessToken, map[string]any{"name": "护理一组", "timezone": "Asia/Shanghai"})
 	workspaceID := jsonUint(t, workspace, "data", "id")
-	invitation := apiRequest(t, router, http.MethodPost, fmt.Sprintf("/api/v1/workspaces/%d/invitations", workspaceID), alice.AccessToken, map[string]any{"email": "bob@example.com", "role": "MEMBER"})
+	invitation := apiRequest(t, router, http.MethodPost, fmt.Sprintf("/api/v1/workspaces/%d/invitations", workspaceID), alice.AccessToken, map[string]any{"username": "bob", "role": "MEMBER"})
+	if jsonString(t, invitation, "data", "username") != "bob" { t.Fatalf("username invitation did not resolve: %+v", invitation) }
 	apiRequest(t, router, http.MethodPost, "/api/v1/invitations/accept", bob.AccessToken, map[string]any{"token": jsonString(t, invitation, "data", "token")})
 
 	apiRequest(t, router, http.MethodPatch, fmt.Sprintf("/api/v1/workspaces/%d", workspaceID), alice.AccessToken, map[string]any{"name": "护理协同组", "timezone": "Asia/Shanghai"})

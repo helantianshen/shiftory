@@ -12,7 +12,7 @@ const session = useSessionStore();
 const workspaceID = computed(() => session.currentWorkspace!.id);
 const queryClient = useQueryClient();
 const invitationOpen = ref(false);
-const invitation = reactive({ email: "", role: "MEMBER" });
+const invitation = reactive({ mode: "email", email: "", username: "", role: "MEMBER" });
 const inviteResult = ref("");
 const members = useQuery({
   queryKey: computed(() => ["members", workspaceID.value]),
@@ -33,9 +33,12 @@ const invitations = useQuery({
     }>(`/workspaces/${workspaceID.value}/invitations`),
 });
 async function createInvite() {
+  const payload = invitation.mode === "username"
+    ? { username: invitation.username, role: invitation.role }
+    : { email: invitation.email, role: invitation.role };
   const result = await api.post<{ token: string }>(
     `/workspaces/${workspaceID.value}/invitations`,
-    invitation,
+    payload,
   );
   inviteResult.value = result.token;
   ElMessage.success("邀请已创建");
@@ -146,7 +149,7 @@ async function revoke(id: number) {
   <section class="surface-card table-card" style="margin-top: 18px">
     <div class="card-padding"><h2 class="section-title">邀请记录</h2></div>
     <el-table :data="invitations.data.value?.items ?? []"
-      ><el-table-column prop="email" label="邮箱" /><el-table-column
+      ><el-table-column label="目标" min-width="200"><template #default="scope"><span v-if="scope.row.username">{{ scope.row.username }}（用户名）</span><span v-else>{{ scope.row.email }}</span></template></el-table-column><el-table-column
         prop="role"
         label="角色"
         width="100"
@@ -169,8 +172,7 @@ async function revoke(id: number) {
   </section>
   <el-dialog v-model="invitationOpen" title="邀请成员" width="min(500px,94vw)"
     ><el-form label-position="top"
-      ><el-form-item label="邮箱"
-        ><el-input v-model="invitation.email" /></el-form-item
+      ><el-form-item label="邀请方式"><el-radio-group v-model="invitation.mode"><el-radio-button value="email">邮箱</el-radio-button><el-radio-button value="username">用户名</el-radio-button></el-radio-group></el-form-item><el-form-item :label="invitation.mode === 'username' ? '用户名' : '邮箱'"><el-input v-if="invitation.mode === 'username'" v-model="invitation.username" placeholder="输入已注册用户名" /><el-input v-else v-model="invitation.email" placeholder="输入邮箱地址" /></el-form-item
       ><el-form-item label="角色"
         ><el-select v-model="invitation.role"
           ><el-option label="普通成员" value="MEMBER" /><el-option

@@ -421,11 +421,11 @@ func (s *server) overview(c *gin.Context) {
 	monthStart := parsedDate.AddDate(0, 0, 1-parsedDate.Day())
 	monthEnd := monthStart.AddDate(0, 1, -1)
 	var scheduledThisMonth int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM schedule_days WHERE workspace_id = ? AND user_id = ? AND work_date BETWEEN ? AND ?`, workspaceID, currentUserID(c), monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02")).Scan(&scheduledThisMonth)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM schedule_days WHERE user_id = ? AND work_date BETWEEN ? AND ?`, workspaceID, currentUserID(c), monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02")).Scan(&scheduledThisMonth)
 	completeness := float64(scheduledThisMonth) / float64(monthEnd.Day()) * 100
 	var nextWorking, nextRest sql.NullString
-	_ = s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE workspace_id = ? AND user_id = ? AND work_date >= ? AND status = 'WORKING' ORDER BY work_date LIMIT 1`, workspaceID, currentUserID(c), date.String()).Scan(&nextWorking)
-	_ = s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE workspace_id = ? AND user_id = ? AND work_date >= ? AND status = 'REST' ORDER BY work_date LIMIT 1`, workspaceID, currentUserID(c), date.String()).Scan(&nextRest)
+	_ = s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'WORKING' ORDER BY work_date LIMIT 1`, workspaceID, currentUserID(c), date.String()).Scan(&nextWorking)
+	_ = s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'REST' ORDER BY work_date LIMIT 1`, workspaceID, currentUserID(c), date.String()).Scan(&nextRest)
 	windowEnd := schedule.MustDate(parsedDate.AddDate(0, 1, 0).Format("2006-01-02"))
 	windowDays, _ := dateRange(date, windowEnd, 366)
 	windowSchedules, _ := s.querySchedules(workspaceID, memberIDs, date, windowEnd)

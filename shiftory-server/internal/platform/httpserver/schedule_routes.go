@@ -244,15 +244,15 @@ func (s *server) querySchedules(workspaceID uint64, userIDs []uint64, start, end
 		return []schedule.Day{}, nil
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(userIDs)), ",")
-	args := make([]any, 0, len(userIDs)+3)
-	args = append(args, workspaceID, start.String(), end.String())
+	args := make([]any, 0, len(userIDs)+2)
+	args = append(args, start.String(), end.String())
 	for _, id := range userIDs {
 		args = append(args, id)
 	}
 	rows, err := s.db.Query(`
 SELECT id, user_id, DATE_FORMAT(work_date, '%Y-%m-%d'), status, source_type, source_import_id, note, version, created_by
 FROM schedule_days
-WHERE workspace_id = ? AND work_date BETWEEN ? AND ? AND user_id IN (`+placeholders+`)
+WHERE work_date BETWEEN ? AND ? AND user_id IN (`+placeholders+`)
 ORDER BY work_date, user_id`, args...)
 	if err != nil {
 		return nil, err
