@@ -3,6 +3,7 @@ package imageai
 import (
 	"context"
 	"testing"
+	"time"
 
 	agentmodel "trpc.group/trpc-go/trpc-agent-go/model"
 
@@ -13,6 +14,16 @@ type capturingModel struct {
 	request *agentmodel.Request
 	content string
 	err     error
+}
+
+func TestOpenAICompatibleClientUsesConfiguredTimeout(t *testing.T) {
+	client, err := NewOpenAICompatibleWithTimeout("vision-test", "test-key", "", 45*time.Second)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if client.timeout != 45*time.Second {
+		t.Fatalf("unexpected timeout %s", client.timeout)
+	}
 }
 
 func (m *capturingModel) Info() agentmodel.Info { return agentmodel.Info{Name: "fake-vision"} }

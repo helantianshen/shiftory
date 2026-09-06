@@ -35,14 +35,23 @@ func NewClient(model agentmodel.Model) *Client {
 }
 
 func NewOpenAICompatible(modelName, apiKey, baseURL string) (*Client, error) {
+	return NewOpenAICompatibleWithTimeout(modelName, apiKey, baseURL, 90*time.Second)
+}
+
+func NewOpenAICompatibleWithTimeout(modelName, apiKey, baseURL string, timeout time.Duration) (*Client, error) {
 	if strings.TrimSpace(modelName) == "" || strings.TrimSpace(apiKey) == "" {
 		return nil, errors.New("AI model and API key are required")
+	}
+	if timeout <= 0 {
+		return nil, errors.New("AI request timeout must be positive")
 	}
 	options := []openai.Option{openai.WithAPIKey(apiKey)}
 	if strings.TrimSpace(baseURL) != "" {
 		options = append(options, openai.WithBaseURL(strings.TrimRight(baseURL, "/")))
 	}
-	return NewClient(openai.New(modelName, options...)), nil
+	client := NewClient(openai.New(modelName, options...))
+	client.timeout = timeout
+	return client, nil
 }
 
 func (c *Client) Recognize(ctx context.Context, input Request) (Draft, error) {

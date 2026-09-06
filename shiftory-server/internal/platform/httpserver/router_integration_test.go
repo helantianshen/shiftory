@@ -248,7 +248,9 @@ func TestImageImportAccessDownloadAndCancellation(t *testing.T) {
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
 	cfg, _ := config.Load()
 	cfg.UploadDir = t.TempDir()
-	router, err := New(Dependencies{DB: db, Config: cfg, Tokens: auth.NewTokenManager(privateKey, publicKey, "test-key", cfg.JWTIssuer, cfg.JWTAudience, 15*time.Minute, 7*24*time.Hour)})
+	cfg.AIEnabled = true
+	wakeups := 0
+	router, err := New(Dependencies{DB: db, Config: cfg, Tokens: auth.NewTokenManager(privateKey, publicKey, "test-key", cfg.JWTIssuer, cfg.JWTAudience, 15*time.Minute, 7*24*time.Hour), ImportWakeup: func() { wakeups++ }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +267,9 @@ func TestImageImportAccessDownloadAndCancellation(t *testing.T) {
 	jobID := jsonUint(t, upload, "data", "id")
 	if jsonString(t, upload, "data", "state") != "PENDING" {
 		t.Fatalf("expected pending image import: %+v", upload)
+	}
+	if wakeups != 1 {
+		t.Fatalf("expected one worker wakeup after commit, got %d", wakeups)
 	}
 	bobImports := apiRequest(t, router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%d/imports", workspaceID), bob.AccessToken, nil)
 	if len(jsonArray(t, bobImports, "data", "items")) != 0 {
@@ -287,6 +292,7 @@ func TestUncertainImportItemCanBeCorrectedBeforeCommit(t *testing.T) {
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
 	cfg, _ := config.Load()
 	cfg.UploadDir = t.TempDir()
+	cfg.AIEnabled = true
 	router, err := New(Dependencies{DB: db, Config: cfg, Tokens: auth.NewTokenManager(privateKey, publicKey, "test-key", cfg.JWTIssuer, cfg.JWTAudience, 15*time.Minute, 7*24*time.Hour)})
 	if err != nil {
 		t.Fatal(err)

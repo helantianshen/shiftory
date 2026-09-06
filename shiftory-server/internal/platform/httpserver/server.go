@@ -25,18 +25,20 @@ const userIDKey = "authenticatedUserID"
 const requestIDKey = "requestID"
 
 type Dependencies struct {
-	DB     *sql.DB
-	Config config.Config
-	Tokens *auth.TokenManager
-	Store  storage.Store
+	DB           *sql.DB
+	Config       config.Config
+	Tokens       *auth.TokenManager
+	Store        storage.Store
+	ImportWakeup func()
 }
 
 type server struct {
-	db          *sql.DB
-	config      config.Config
-	tokens      *auth.TokenManager
-	authService *auth.Service
-	store       storage.Store
+	db           *sql.DB
+	config       config.Config
+	tokens       *auth.TokenManager
+	authService  *auth.Service
+	store        storage.Store
+	importWakeup func()
 }
 
 func New(deps Dependencies) (http.Handler, error) {
@@ -54,7 +56,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	s := &server{
 		db: deps.DB, config: deps.Config, tokens: deps.Tokens,
 		authService: auth.NewService(auth.NewMySQLRepository(deps.DB), auth.NewPasswordHasher(auth.DefaultPasswordParams()), deps.Tokens),
-		store:       store,
+		store:       store, importWakeup: deps.ImportWakeup,
 	}
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()

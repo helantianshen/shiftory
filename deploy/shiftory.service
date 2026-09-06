@@ -1,0 +1,23 @@
+[Unit]
+Description=Shiftory API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shiftory
+Group=shiftory
+WorkingDirectory=/opt/shiftory
+EnvironmentFile=/etc/shiftory/shiftory.env
+ExecStart=/opt/shiftory/bin/shiftory-api
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/shiftory /var/lib/shiftory/uploads /var/lib/shiftory/var
+
+[Install]
+WantedBy=multi-user.target

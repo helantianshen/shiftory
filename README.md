@@ -7,7 +7,7 @@ Shiftory 是面向小团队的排班协同应用。当前仓库已实现完整 M
 - 前端：Vue 3、TypeScript、Vite、Vue Router、Pinia、TanStack Vue Query、Element Plus、SCSS。
 - 后端：Go 1.27、Gin、`database/sql`、MySQL 8.4、Goose、Excelize、tRPC-Agent-Go。
 - 认证：Ed25519 Access JWT + 轮换 Refresh JWT。Access Token 只驻留前端内存；Refresh Token 只在 HttpOnly Cookie 中，刷新和注销另有 CSRF 双提交校验。
-- 工程形态：单仓库、前后端分离、模块化单体；API、图片识别 Worker 和迁移命令独立启动。
+- 工程形态：单仓库、前后端分离、模块化单体；API 进程内置图片识别 Worker，迁移命令独立执行。
 
 ### 后端分层约定
 
@@ -19,7 +19,21 @@ Shiftory 是面向小团队的排班协同应用。当前仓库已实现完整 M
 
 ## 本地启动
 
-前置环境：Go 1.27.1、Node.js 24（含 npm）、MySQL 8.4。仓库根目录的 `.env.example` 列出全部环境变量；后端直接读取进程环境，不自动加载 `.env` 文件。前端优先使用 PATH 中的 pnpm，其次使用 Corepack；两者都不可用时，启动脚本会通过 npm 缓存临时运行项目锁定的 pnpm 版本，不会修改全局 PATH。
+前置环境：Go 1.27.1、Node.js 24（含 npm）、MySQL 8.4。仓库根目录的 `.env.example` 列出全部环境变量。后端优先读取系统环境变量；缺失项会按顺序查找 `SHIFTORY_ENV_FILE`、Linux 的 `/etc/shiftory/shiftory.env`，以及当前目录和上两级目录中的 `.env.development`、`.env.local`、`.env`、`.env.production`。显式指定的 `SHIFTORY_ENV_FILE` 不存在或格式错误时会直接报错。前端优先使用 PATH 中的 pnpm，其次使用 Corepack；两者都不可用时，启动脚本会通过 npm 缓存临时运行项目锁定的 pnpm 版本，不会修改全局 PATH。
+
+### GoLand 启动
+
+仓库的 `.run` 目录包含可共享的 GoLand 运行配置，重新打开项目或执行 **File > Reload All from Disk** 后，可以直接使用：
+
+- `Shiftory Migrate`：执行一次数据库迁移；首次启动或数据库结构变化后运行。
+- `Shiftory API`：启动后端 API，图片 AI Worker 按配置在同一进程内启用。
+- `Shiftory Web (pnpm)`：通过 GoLand 的 npm 类型运行 `pnpm dev`。JetBrains 将 npm、Yarn 和 pnpm 脚本统一放在这个运行配置类型中，所以无需创建自定义 Shell 配置。
+- `Shiftory Development`：同时启动 API 和前端，适合日常开发；不会自动执行迁移。
+
+运行配置默认不会自动显示在 Services 中。按 `Alt+8` 打开 Services，依次选择 **Add Service > Run Configuration**，加入 `Go Application`、`npm` 和 `Compound` 类型；其中 `npm` 节点就是前端 pnpm 服务。
+
+前端配置使用 GoLand 的项目级包管理器。若启动日志实际调用的不是 pnpm，请在 **Settings > Languages & Frameworks > JavaScript Runtime > Package manager** 中选择项目的 pnpm 或 Corepack，然后重新运行。后端从系统环境变量或仓库根目录的 `.env.development` 自动加载配置；要在 API 内启用图片 Worker，请确保配置中有 `SHIFTORY_AI_ENABLED=true`。
+
 ### 一键开发启动
 
 仓库根目录已提供被 Git 忽略的 `.env.development`，其中包含完整的本地开发配置。按需修改数据库、端口、JWT 文件、上传目录和 AI Worker 参数，然后执行：
@@ -35,11 +49,11 @@ Shiftory 是面向小团队的排班协同应用。当前仓库已实现完整 M
 .\scripts\start-dev.ps1 -SkipMigrate    # 跳过迁移
 .\scripts\start-dev.ps1 -BackendOnly    # 只启动 API
 .\scripts\start-dev.ps1 -FrontendOnly   # 只启动前端
-.\scripts\start-dev.ps1 -WithWorker     # 额外启动图片 AI Worker
+.\scripts\start-dev.ps1 -EnableAI       # 临时启用 API 内的图片识别能力
 .\scripts\start-dev.ps1 -EnvFile .env.local
 ```
 
-图片 AI Worker 只有在 `.env.development` 中填写 `SHIFTORY_AI_API_KEY` 后才适合进行真实供应商验收；空 Key 仍可用于启动和离线开发。
+图片 AI Worker 运行在 API 进程内。设置 `SHIFTORY_AI_ENABLED=true`、模型名称和 API Key 后启用；未启用时普通排班和 Excel 导入仍可用。`SHIFTORY_WORKER_MAX_CONCURRENCY` 控制同时处理的图片任务数，`SHIFTORY_WORKER_LEASE` 控制任务处理租约，`SHIFTORY_WORKER_POLL_INTERVAL` 控制无唤醒信号时的数据库扫描周期。
 
 如本机没有 MySQL，可在仓库根目录启动容器：
 
@@ -65,18 +79,33 @@ pnpm dev
 
 开发模式下浏览器访问 `http://localhost:5173`，Vite 会把 `/api` 代理至 `http://127.0.0.1:8080`。执行 `pnpm build-only` 后，后端也可以通过 `SHIFTORY_WEB_DIR=../shiftory-web/dist` 同域提供前端静态资源。
 
+### Linux 单机部署
+
+Linux 单机只需要运行 API 二进制，图片 AI Worker 会在同一进程内启动。将配置放到 `/etc/shiftory/shiftory.env`，或通过 `SHIFTORY_ENV_FILE` 指定其他绝对路径；`SHIFTORY_UPLOAD_DIR`、`SHIFTORY_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
+
+```bash
+./scripts/start-linux.sh build
+./scripts/start-linux.sh migrate
+sudo install -m 0755 deploy/shiftory.service /etc/systemd/system/shiftory.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now shiftory
+```
+
+`deploy/shiftory.service` 默认使用 `/opt/shiftory/bin/shiftory-api`、`/etc/shiftory/shiftory.env` 和 `shiftory` 系统用户；如果安装目录不同，请同步调整 unit 文件。数据库迁移只在发布时执行，不由 systemd 每次重启重复触发。
+
 ## 图片 AI Worker
 
-设置 OpenAI 兼容视觉模型参数后，单独运行 Worker：
+设置 OpenAI 兼容视觉模型参数后，启动 API 即会同时启动内置 Worker：
 
 ```powershell
 $env:SHIFTORY_AI_MODEL = "your-vision-model"
 $env:SHIFTORY_AI_BASE_URL = "https://your-provider.example/v1"
 $env:SHIFTORY_AI_API_KEY = "your-key"
-go run ./cmd/worker
+$env:SHIFTORY_AI_ENABLED = "true"
+go run ./cmd/api
 ```
 
-图片原文件以内联多模态消息发送；模型被要求按严格 JSON Schema 输出，温度为 0。Worker 使用 MySQL 租约、心跳、重试延迟和 `SKIP LOCKED` 领取任务。模型结果只生成预览，不会直接写入正式排班；不确定项必须由用户人工修正或保持跳过。AI 供应商的在线连通性需要使用实际密钥单独验收。
+图片原文件以内联多模态消息发送；模型被要求按严格 JSON Schema 输出，温度为 0。内置 Worker 使用 MySQL 租约、心跳、重试延迟和 `SKIP LOCKED` 领取任务，并通过固定容量的 ants 协程池限制并发。模型结果只生成预览，不会直接写入正式排班；不确定项必须由用户人工修正或保持跳过。AI 供应商的在线连通性需要使用实际密钥单独验收。
 
 ## 验证
 

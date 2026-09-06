@@ -4,7 +4,7 @@
 
 **Goal:** Build the complete Shiftory scheduling collaboration MVP described by `docs/需求.md`, including authentication, multi-workspace authorization, shifts, schedules, team calendar, Excel/XLS and image-AI imports, review/conflict/rollback, audit history, themes, and all shared member/admin pages.
 
-**Architecture:** Keep one repository with a Vue SPA and a Go modular monolith. The Go application exposes `/api/v1`, uses MySQL 8.4 for durable state and database-backed jobs, and runs API and worker entrypoints from the same domain modules. All workspace routes carry an explicit workspace ID; access JWTs contain identity only, while current workspace membership is checked against MySQL.
+**Architecture:** Keep one repository with a Vue SPA and a Go modular monolith. The Go application exposes `/api/v1`, uses MySQL 8.4 for durable state and database-backed jobs, and runs the durable image task Worker inside the long-running API process; the migration command remains a separate one-shot entrypoint. All workspace routes carry an explicit workspace ID; access JWTs contain identity only, while current workspace membership is checked against MySQL.
 
 **Tech Stack:** Go 1.27.1, Gin, database/sql, go-sql-driver/mysql, MySQL 8.4, Goose, Excelize, extrame/xls, tRPC-Agent-Go, golang-jwt/jwt/v5, Vue 3.5, TypeScript 6, Vite 8, Pinia, Vue Router, TanStack Vue Query, Element Plus, SCSS, Vitest.
 
@@ -260,13 +260,13 @@ Original files are accessed through `storage.Store`; database rows store opaque 
 - Create: `shiftory-server/internal/importer/imageai/trpc.go`
 - Create: `shiftory-server/internal/importer/imageai/schema.go`
 - Create: `shiftory-server/internal/importer/imageai/schema_test.go`
-- Create: `shiftory-server/cmd/worker/main.go`
+- Create: `shiftory-server/cmd/api/main.go`
 
 - [ ] **Step 1: Write red worker tests.**
 
 Cover `FOR UPDATE SKIP LOCKED` semantics through repository contracts, lease acquisition, heartbeat, retry with bounded backoff, abandoned lease recovery, cancellation, and idempotent completion.
 
-- [ ] **Step 2: Implement worker and run green.**
+- [ ] **Step 2: Implement the durable worker and wire it into the API process; run green.**
 
 - [ ] **Step 3: Write red image draft schema tests.**
 
@@ -282,7 +282,7 @@ Use an OpenAI-compatible provider configured by environment, a multimodal user m
 - Create: `shiftory-server/api/openapi.yaml`
 - Create: `shiftory-server/internal/platform/httpserver/router.go`
 - Create: `shiftory-server/internal/platform/httpserver/router_test.go`
-- Create: `shiftory-server/cmd/api/main.go`
+- Modify: `shiftory-server/cmd/api/main.go`
 - Create: `shiftory-server/cmd/migrate/main.go`
 
 - [ ] **Step 1: Write red HTTP integration tests for health, auth, workspace, shift, schedule, calendar, import, audit, and preference routes.**
@@ -355,7 +355,7 @@ Expected: PASS with no TypeScript errors.
 
 Use the user-supplied local credentials only in the local shell environment, not committed source files.
 
-- [ ] **Step 2: Start API and worker, then run the API acceptance script.**
+- [ ] **Step 2: Start the API (which embeds the image Worker), then run the API acceptance script.**
 
 The script registers users, creates/switches a workspace, manages members and shifts, writes/batches schedules, verifies calendar counts, uploads both workbook formats, resolves a conflict, commits and rolls back an import, reads audits, updates profile/theme, refreshes JWTs, and logs out.
 

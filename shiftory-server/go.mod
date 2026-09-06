@@ -9,6 +9,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/panjf2000/ants/v2 v2.11.0
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/xuri/excelize/v2 v2.11.0
 	golang.org/x/crypto v0.56.0

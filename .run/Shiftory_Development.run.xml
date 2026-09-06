@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Shiftory Development" type="CompoundRunConfigurationType" factoryName="Compound">
+    <toRun name="Shiftory API" type="GoApplicationRunConfiguration" />
+    <toRun name="Shiftory Web (pnpm)" type="js.build_tools.npm" />
+    <method v="2" />
+  </configuration>
+</component>

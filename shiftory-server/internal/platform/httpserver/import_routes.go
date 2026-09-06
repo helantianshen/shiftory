@@ -278,6 +278,10 @@ func importDates(start, end schedule.Date) ([]schedule.Date, error) {
 }
 
 func (s *server) createImageImport(c *gin.Context) {
+	if !s.config.AIEnabled {
+		failure(c, http.StatusServiceUnavailable, "AI_DISABLED", "图片 AI 导入功能未启用", nil)
+		return
+	}
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
 		return
@@ -391,6 +395,9 @@ VALUES (?, ?, ?, ?, ?, ?)`, jobID, storageKey, filepath.Base(header.Filename), m
 	}
 	committed = true
 	s.recordAudit(c, workspaceID, currentUserID(c), "IMAGE_IMPORT_CREATED", "import_job", jobID, gin.H{"targetUserId": targetUserID})
+	if s.importWakeup != nil {
+		s.importWakeup()
+	}
 	success(c, http.StatusAccepted, gin.H{"id": jobID, "state": "PENDING", "itemCount": 0, "conflictCount": 0, "invalidCount": 0})
 }
 

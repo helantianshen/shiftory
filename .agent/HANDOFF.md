@@ -6,7 +6,9 @@
 
 完整 MVP 已实现并通过后端全量测试、前端类型检查/测试/生产构建及真实 HTTP API 验收。项目根目录已有唯一的本地 Git 仓库，分支为 `main`；尚未暂存、提交、推送或配置远程。
 
-当前开发配置已补充统一入口：根目录 `.env.development` 提供可调整的本地环境变量，`scripts/start-dev.ps1` 负责读取配置、执行迁移并分别启动 API、前端和可选图片 AI Worker。启动器已兼容普通 Windows PowerShell 中没有全局 pnpm/Corepack 的环境，会通过 npm 缓存临时运行前端锁定的 pnpm 版本。尚未执行提交或远程操作。
+当前开发配置已补充统一入口：根目录 `.env.development` 提供可调整的本地环境变量，`scripts/start-dev.ps1` 负责读取配置、执行迁移并分别启动 API 和前端；图片 AI Worker 按配置在 API 进程内运行。启动器已兼容普通 Windows PowerShell 中没有全局 pnpm/Corepack 的环境，会通过 npm 缓存临时运行前端锁定的 pnpm 版本。尚未执行提交或远程操作。
+
+2026-09-06 已完成架构合并后的遗留清理：后端可部署命令现在只有 `cmd/api` 和 `cmd/migrate`；图片 AI Worker 仅作为 API 进程内的持久化任务 Runner 运行。独立的 `cmd/worker` 入口已删除，开发启动参数改为 `-EnableAI`，systemd、README、历史计划和本交接记录均已同步；个人 `.idea/workspace.xml` 未修改，避免覆盖本机 IDE 状态。
 
 # 已完成工作
 
@@ -23,6 +25,9 @@
 - Pinia 仅管理用户、登录态、工作区摘要、当前工作区、主题和内存 Access Token；服务端业务数据由 Vue Query 管理，任何令牌均不持久化。
 - 已补充 OpenAPI 3.1、README、环境变量样例、MySQL Compose 和真实 API 验收脚本。
 - 已补充被 Git 忽略的 `.env.development` 和 `scripts/start-dev.ps1`；示例环境文件中的 AI Key 已改为占位符，避免分发疑似真实凭据。
+- 已生成可共享的 GoLand `.run` 配置：`Shiftory API`、`Shiftory Migrate`、`Shiftory Web (pnpm)` 和 `Shiftory Development`；前端使用 GoLand 项目级包管理器，Services 中通过 `Run Configuration` 类型添加。
+- 已完成 Worker 合并后的遗留清理：删除 `shiftory-server/cmd/worker/main.go`，移除启动器的独立 Worker 启动路径，将 `-WithWorker` 改为 `-EnableAI`，并将 Linux 服务描述和启动输出统一为 API 服务。
+- 已新增 `scripts/tests/embedded-worker-architecture.Tests.ps1`，持续校验 API/迁移命令边界、API 内置 Runner、迁移归属，以及仓库中不得重新出现独立 Worker 启动引用。
 - 前端在 `package.json` 固定使用 `pnpm@11.19.0`；启动器按 pnpm、Corepack、npm exec 顺序解析包管理器，不要求修改系统 PATH 或进行全局安装。
 - 修正 HTTP 集成测试中的日期敏感夹具：固定成员加入日为 `2026-09-01`、移除日为 `2026-09-04`，确保测试稳定覆盖成员有效期边界。
 - Excel 导入模板的日期列 `A2:A1000` 已设置为 Excel 文本格式 `@`，模板日期以 `yyyy-mm-dd` 字符串保存，避免编辑后按本地格式显示为 `yyyy/m/d`。
@@ -35,7 +40,7 @@
 - `docs/superpowers/plans/2026-09-04-shiftory-full-mvp.md`
 - `shiftory-server/api/openapi.yaml`
 - `shiftory-server/cmd/api/main.go`
-- `shiftory-server/cmd/worker/main.go`
+- `shiftory-server/cmd/migrate/main.go`
 - `shiftory-server/internal/platform/httpserver/`
 - `shiftory-server/internal/importjob/`
 - `shiftory-server/migrations/`
@@ -46,19 +51,25 @@
 - `scripts/start-dev.ps1`
 - `scripts/dev-tooling.ps1`
 - `scripts/tests/dev-tooling.Tests.ps1`
+- `scripts/tests/embedded-worker-architecture.Tests.ps1`
+- `.run/Shiftory_API.run.xml`
+- `.run/Shiftory_Migrate.run.xml`
+- `.run/Shiftory_Web_pnpm.run.xml`
+- `.run/Shiftory_Development.run.xml`
+- `deploy/shiftory.service`
 
 # 验证结果
 
 - 后端：`go test ./... -count=1` 通过；包含认证、排班领域、日历、XLSX/XLS、图片结构化输出、Worker、迁移、HTTP/MySQL 集成、JWT 密钥和存储测试。
 - OpenAPI：YAML 解析、版本与 35 个 API 路径组覆盖测试通过。
 - 前端：`pnpm type-check` 通过。
-- 前端：`pnpm test` 通过，4 个测试文件、6 个测试。
-- 前端：`pnpm build-only` 通过。Element Plus 主包产生约 890 kB 的压缩前 chunk 警告，不影响构建或运行。
+- 前端：`pnpm test` 通过，6 个测试文件、11 个测试。
+- 前端：`pnpm build-only` 通过。Element Plus 主包产生约 894 kB 的压缩前 chunk 警告，不影响构建或运行。
 - 真实 API：本机 MySQL `shiftory` 库迁移到 Goose v2，启动 `cmd/api` 后运行 `scripts/accept-api.ps1`，结果 `PASS`；覆盖健康检查、JWT 注册/登录、工作区、班次、排班、完整团队详情、偏好、Refresh 轮换 + CSRF 和 Excel 模板。
 - 文件系统检查：只存在根目录一个 `.git`，HEAD 指向 `refs/heads/main`。
 - 开发配置验证：3 个 PowerShell 脚本 AST 解析通过；包管理器解析单测通过；移除 Codex 内置 pnpm/Corepack 路径后，`scripts/start-dev.ps1 -ValidateOnly` 正确选择本机 `npm.exe`，并通过 npm exec 实际运行 `pnpm@11.19.0`。
 - 前端降级链路验收：在无全局 pnpm/Corepack 的模拟 PATH 中成功启动 Vite `http://127.0.0.1:5173`，随后已终止测试服务且端口无残留监听。
-- 前端降级链路回归：经 npm exec 运行 `pnpm test`（4 文件、6 测试）、`pnpm type-check` 和 `pnpm build-only` 均通过；构建仍只有约 890 kB 主 chunk 警告。
+- 前端降级链路回归：经 npm exec 运行 `pnpm test`（6 文件、11 测试）、`pnpm type-check` 和 `pnpm build-only` 均通过；构建仍只有约 894 kB 主 chunk 警告。
 - 本次回归：`go test ./... -count=1` 通过，包含 `internal/platform/httpserver` 全量集成测试。
 - 模板回归：`TestScheduleImportTemplateKeepsISODateTextFormat` 通过，确认日期单元格保持共享字符串并引用文本格式。
 - 模板回归：`TestScheduleImportTemplateAddsDropdownsAndCombinationValidation` 通过，确认状态/班次/跨日下拉、隐藏选项表、Stop 错误提示和组合公式均写入 XLSX。
@@ -69,15 +80,20 @@
 - 结构化错误回归：`TestNormalizeReturnsStructuredRestDayError`、`TestWriteImportValidationFailure` 通过；修改后再次执行 `go test ./... -count=1` 通过。
 - 导入错误分层计划已保存至 `docs/superpowers/plans/2026-09-05-import-error-mvc.md`；新增 `ValidationError` 覆盖日期、状态、跨日、时间互斥、休息日段和排班组合错误，HTTP Controller 统一返回中文 message 与 `details.row/fields/ruleCode/hint`。
 - 附件 `D:/下载/shiftory-schedule-template.xlsx` 已确认第 2 行为“休息 + 早班”，第 9、10、16、17 行为“休息 + 08:30-17:30”；现在 API 会分别返回可定位的行号和字段，不再只返回英文 `rest day cannot contain segments`。
+- 架构清理回归：`scripts/tests/embedded-worker-architecture.Tests.ps1` 通过；`go list ./...` 仅列出 `shiftory-server/cmd/api` 和 `shiftory-server/cmd/migrate`，未发现独立 Worker 残留引用。
+- GoLand 配置回归：四份 `.run/*.run.xml` 均可解析，`scripts/tests/goland-run-config.Tests.ps1` 通过；pnpm 项目脚本可通过 npm 缓存降级链实际运行 Vite。
+- 启动器回归：`scripts/start-dev.ps1 -ValidateOnly` 和 `-EnableAI -ValidateOnly` 均通过；旧参数 `-WithWorker` 已被拒绝，防止误以为还能启动独立 Worker。
+- Linux/格式回归：`bash -n scripts/start-linux.sh` 和 `git diff --check` 通过；Git 仅提示现有文件的 LF/CRLF 转换，不存在空白错误。
 
 # 尚需外部验收
 
-- 按用户安排，真实图片 AI 供应商调用未在开发阶段联网执行。适配器、严格 Schema、错误处理、重试和离线 fake 测试已完成；需要用户提供实际 `SHIFTORY_AI_MODEL`、`SHIFTORY_AI_BASE_URL`、`SHIFTORY_AI_API_KEY` 后启动 `cmd/worker` 验收模型兼容性。
+- 按用户安排，真实图片 AI 供应商调用未在开发阶段联网执行。适配器、严格 Schema、错误处理、重试和离线 fake 测试已完成；需要用户提供实际 `SHIFTORY_AI_MODEL`、`SHIFTORY_AI_BASE_URL`、`SHIFTORY_AI_API_KEY` 后启动 `cmd/api` 验收模型兼容性。
 
 # 本地状态提示
 
 - 本机正式 `shiftory` 数据库中存在 API 验收脚本创建的临时用户与工作区数据。
 - 未获得 Commit/Push/PR 授权，因此没有执行任何提交或远程操作。
-- 本次只实际拉起并验收了前端降级启动链路；未通过启动器重新拉起 API/Worker。真实 Worker 供应商调用仍需实际 AI 参数和密钥。
+- 本次只实际拉起并验收了前端降级启动链路；未通过启动器重新拉起 API。真实图片 AI 供应商调用仍需实际 AI 参数和密钥。
+- 架构清理计划已保存至 `docs/superpowers/plans/2026-09-06-embedded-worker-cleanup.md`；本次修改仍未暂存或提交。
 - 当前测试夹具不再依赖运行当天的成员加入/移除时间。
 - Excel 数据验证只是编辑体验约束；上传时仍由 `internal/importer/normalize.go` 执行最终互斥和状态校验，复制粘贴或外部程序生成的非法 XLSX 不会绕过后端规则。

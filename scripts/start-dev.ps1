@@ -4,7 +4,7 @@ param(
     [switch]$SkipMigrate,
     [switch]$BackendOnly,
     [switch]$FrontendOnly,
-    [switch]$WithWorker,
+    [switch]$EnableAI,
     [switch]$ValidateOnly
 )
 
@@ -74,6 +74,10 @@ function Start-DevProcess {
 }
 
 Import-EnvironmentFile -Path $EnvFile
+[Environment]::SetEnvironmentVariable("SHIFTORY_ENV_FILE", $EnvFile, "Process")
+if ($EnableAI) {
+    [Environment]::SetEnvironmentVariable("SHIFTORY_AI_ENABLED", "true", "Process")
+}
 Assert-Directory -Path $serverRoot -Label "Backend"
 Assert-Directory -Path $webRoot -Label "Frontend"
 
@@ -99,7 +103,7 @@ if ($ValidateOnly) {
     Write-Output "Web origin: $($env:SHIFTORY_PUBLIC_ORIGIN)"
     if ($goCommand) { Write-Output "Go command: $($goCommand.Source)" }
     if ($pnpmInvocation) { Write-Output "Frontend package runner: $($pnpmInvocation.Provider) ($($pnpmInvocation.FilePath))" }
-    Write-Output "AI worker: $(if ([string]::IsNullOrWhiteSpace($env:SHIFTORY_AI_API_KEY)) { 'disabled (empty SHIFTORY_AI_API_KEY)' } else { 'enabled' })"
+    Write-Output "Image AI: $(if ($env:SHIFTORY_AI_ENABLED -ne 'true') { 'disabled (SHIFTORY_AI_ENABLED is not true)' } elseif ([string]::IsNullOrWhiteSpace($env:SHIFTORY_AI_API_KEY)) { 'enabled but missing SHIFTORY_AI_API_KEY' } else { 'enabled' })"
     exit 0
 }
 
@@ -116,12 +120,6 @@ if (-not $FrontendOnly -and -not $SkipMigrate) {
 
 if (-not $FrontendOnly) {
     Start-DevProcess -Title "Shiftory API" -WorkingDirectory $serverRoot -Command "go run ./cmd/api"
-    if ($WithWorker) {
-        if ([string]::IsNullOrWhiteSpace($env:SHIFTORY_AI_API_KEY)) {
-            Write-Warning "SHIFTORY_AI_API_KEY is empty; the worker may not be able to call an AI provider."
-        }
-        Start-DevProcess -Title "Shiftory Image Worker" -WorkingDirectory $serverRoot -Command "go run ./cmd/worker"
-    }
 }
 
 if (-not $BackendOnly) {
