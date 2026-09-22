@@ -31,6 +31,7 @@ import (
 
 const maxImportBytes = int64(10 << 20)
 
+// storedSegment 保存可序列化的班次和时间段快照
 type storedSegment struct {
 	Type          schedule.SegmentType `json:"type"`
 	ShiftID       *uint64              `json:"shiftId,omitempty"`
@@ -44,6 +45,7 @@ type storedSegment struct {
 	OriginalLabel string               `json:"originalLabel,omitempty"`
 }
 
+// storedSchedule 保存排班业务快照与来源信息，供预览比较和修订恢复
 type storedSchedule struct {
 	Status         schedule.Status     `json:"status"`
 	SourceType     schedule.SourceType `json:"sourceType,omitempty"`
@@ -53,6 +55,7 @@ type storedSchedule struct {
 	Segments       []storedSegment     `json:"segments"`
 }
 
+// importItemRecord 保存导入草稿、人工决定与预览生成时的排班版本
 type importItemRecord struct {
 	ID                 uint64
 	Date               schedule.Date
@@ -65,6 +68,7 @@ type importItemRecord struct {
 	ErrorMessage       string
 }
 
+// createImport 校验 Excel 上传并同步生成逐日预览，原文件与任务保存成功后返回待审核状态
 func (s *server) createImport(c *gin.Context) {
 	s.logger.DebugContext(c.Request.Context(), "spreadsheet upload received", "path", c.Request.URL.Path)
 	workspaceID, ok := parseID(c, "workspaceId")
@@ -85,6 +89,7 @@ func (s *server) createImport(c *gin.Context) {
 		failure(c, http.StatusForbidden, "FORBIDDEN", "不能为其他成员导入排班", nil)
 		return
 	}
+	// 授权与目标成员校验后限定导入区间，防止文件数据超出用户声明范围
 	periodStart, startErr := schedule.ParseDate(c.PostForm("periodStart"))
 	periodEnd, endErr := schedule.ParseDate(c.PostForm("periodEnd"))
 	if startErr != nil || endErr != nil || periodStart.String() > periodEnd.String() {
@@ -96,6 +101,7 @@ func (s *server) createImport(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_RANGE", "导入日期范围不能超过 366 天", nil)
 		return
 	}
+	// 先限制上传体积，再按扩展名与文件签名选择对应工作簿读取器
 	header, err := c.FormFile("file")
 	if err != nil || header.Size <= 0 || header.Size > maxImportBytes {
 		failure(c, http.StatusBadRequest, "INVALID_FILE", "请选择不超过 10MB 的排班文件", nil)
@@ -138,6 +144,7 @@ func (s *server) createImport(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_WORKBOOK", err.Error(), nil)
 		return
 	}
+	// 加载工作区班次进行领域规范化，将校验问题映射为可修复的行级错误
 	mappings, err := s.shiftMappings(c.Request.Context(), workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取班次映射", nil)
@@ -156,6 +163,7 @@ func (s *server) createImport(c *gin.Context) {
 		}
 	}
 
+	// 读取现有全局排班作为预览基线，正式提交时仍需重新校验版本
 	existing, err := s.querySchedules(workspaceID, []uint64{targetUserID}, periodStart, periodEnd)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取现有排班", nil)
@@ -166,6 +174,7 @@ func (s *server) createImport(c *gin.Context) {
 		existingByDate[day.WorkDate] = day
 	}
 
+	// 原文件先写存储，数据库未提交时尝试补偿删除，两个资源不共享事务
 	storageKey := filepath.ToSlash(filepath.Join("imports", uuid.NewString()+ext))
 	if err := s.store.Put(c.Request.Context(), storageKey, bytes.NewReader(content)); err != nil {
 		failure(c, http.StatusInternalServerError, "STORAGE_ERROR", "无法保存上传文件", nil)
@@ -173,6 +182,7 @@ func (s *server) createImport(c *gin.Context) {
 	}
 	committed := false
 	defer func() {
+		// 文件系统不参与数据库事务，提交前失败时必须补偿删除已写入文件
 		if !committed {
 			_ = s.store.Delete(c.Request.Context(), storageKey)
 		}
@@ -206,6 +216,7 @@ VALUES (?, ?, ?, ?, ?, ?)`, jobID, storageKey, filepath.Base(header.Filename), h
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法记录导入文件", nil)
 		return
 	}
+	// 按完整声明区间生成预览，文件缺少的日期单独保存为缺失项
 	entriesByDate := make(map[schedule.Date]importer.Entry, len(entries))
 	for _, entry := range entries {
 		entriesByDate[entry.Date] = entry
@@ -263,6 +274,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, jobID, entry.Date.String(), itemType, payload,
 	success(c, http.StatusCreated, gin.H{"id": jobID, "state": "NEEDS_REVIEW", "itemCount": len(periodDates), "conflictCount": conflictCount, "invalidCount": invalidCount})
 }
 
+// importDates 展开包含首尾的导入日期范围，天数上限由调用方检查
 func importDates(start, end schedule.Date) ([]schedule.Date, error) {
 	current, err := time.Parse("2006-01-02", start.String())
 	if err != nil {
@@ -280,6 +292,7 @@ func importDates(start, end schedule.Date) ([]schedule.Date, error) {
 	return result, nil
 }
 
+// createImageImport 校验图片、目标用户及周期后创建持久化任务，提交后通知内置 Runner
 func (s *server) createImageImport(c *gin.Context) {
 	s.logger.DebugContext(c.Request.Context(), "image upload received", "path", c.Request.URL.Path)
 	if !s.config.AIEnabled {
@@ -326,6 +339,7 @@ func (s *server) createImageImport(c *gin.Context) {
 			return
 		}
 	}
+	// 图片上传先进行体积与格式检查，外部模型识别由异步任务执行
 	header, err := c.FormFile("file")
 	if err != nil || header.Size <= 0 || header.Size > maxImportBytes {
 		failure(c, http.StatusBadRequest, "INVALID_FILE", "请选择不超过 10MB 的排班截图", nil)
@@ -357,6 +371,7 @@ func (s *server) createImageImport(c *gin.Context) {
 		"filename", filepath.Base(header.Filename), "bytes", len(content), "width", imageConfig.Width, "height", imageConfig.Height,
 		"format", imageFormat, "instructions_length", len([]rune(instructions)), "mapping_hint_count", len(mappingHints))
 	mediaType := map[string]string{"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}[imageFormat]
+	// 先保存图片再写任务元数据，数据库失败时通过补偿删除减少孤立文件
 	storageKey := filepath.ToSlash(filepath.Join("imports", uuid.NewString()+ext))
 	if err := s.store.Put(c.Request.Context(), storageKey, bytes.NewReader(content)); err != nil {
 		failure(c, http.StatusInternalServerError, "STORAGE_ERROR", "无法保存排班截图", nil)
@@ -365,6 +380,7 @@ func (s *server) createImageImport(c *gin.Context) {
 	s.logger.DebugContext(c.Request.Context(), "image upload stored", "workspace_id", workspaceID, "storage_key", storageKey, "bytes", len(content))
 	committed := false
 	defer func() {
+		// 文件系统不参与数据库事务，提交前失败时必须补偿删除已写入文件
 		if !committed {
 			_ = s.store.Delete(c.Request.Context(), storageKey)
 		}
@@ -411,6 +427,7 @@ VALUES (?, ?, ?, ?, ?, ?)`, jobID, storageKey, filepath.Base(header.Filename), m
 	success(c, http.StatusAccepted, gin.H{"id": jobID, "state": "PENDING", "itemCount": 0, "conflictCount": 0, "invalidCount": 0})
 }
 
+// downloadImportFile 校验导入访问权限后按附件方式返回原始文件
 func (s *server) downloadImportFile(c *gin.Context) {
 	workspaceID, jobID, ok := s.parseImportScope(c)
 	if !ok {
@@ -435,6 +452,7 @@ WHERE j.id = ? AND j.workspace_id = ?`, jobID, workspaceID).Scan(&storageKey, &o
 	_, _ = io.Copy(c.Writer, reader)
 }
 
+// cancelImport 将允许取消的导入任务置为取消状态并记录审计
 func (s *server) cancelImport(c *gin.Context) {
 	workspaceID, jobID, ok := s.parseImportScope(c)
 	if !ok {
@@ -455,6 +473,7 @@ WHERE id = ? AND workspace_id = ? AND state IN ('UPLOADED', 'PENDING', 'PARSING'
 	success(c, http.StatusOK, gin.H{"id": jobID, "state": "CANCELLED"})
 }
 
+// downloadImportTemplate 读取工作区班次并生成带校验和说明的 XLSX 模板
 func (s *server) downloadImportTemplate(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -484,6 +503,7 @@ func (s *server) downloadImportTemplate(c *gin.Context) {
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer.Bytes())
 }
 
+// newScheduleImportTemplate 构造固定表头、示例行与输入校验，成功后由调用方关闭工作簿
 func newScheduleImportTemplate(shiftNames []string) (*excelize.File, error) {
 	workbook := excelize.NewFile()
 	sheet := workbook.GetSheetName(0)
@@ -511,6 +531,7 @@ func newScheduleImportTemplate(shiftNames []string) (*excelize.File, error) {
 			}
 		}
 	}
+	// 日期列按文本保存，避免电子表格软件将 ISO 日期转换为地区格式或序列值
 	textStyle, err := workbook.NewStyle(&excelize.Style{NumFmt: 49})
 	if err != nil {
 		_ = workbook.Close()
@@ -528,6 +549,7 @@ func newScheduleImportTemplate(shiftNames []string) (*excelize.File, error) {
 		_ = workbook.Close()
 		return nil, err
 	}
+	// 隐藏选项表提供状态、班次和跨日列表的数据源，不参与首表导入
 	optionsSheet := "模板选项"
 	if _, err := workbook.NewSheet(optionsSheet); err != nil {
 		_ = workbook.Close()
@@ -549,6 +571,7 @@ func newScheduleImportTemplate(shiftNames []string) (*excelize.File, error) {
 		_ = workbook.Close()
 		return nil, err
 	}
+	// 空班次名称与重复名称不进入下拉列表，无启用班次时提供提示占位
 	cleanedShifts := make([]string, 0, len(shiftNames))
 	seenShifts := make(map[string]struct{}, len(shiftNames))
 	for _, name := range shiftNames {
@@ -592,8 +615,7 @@ func newScheduleImportTemplate(shiftNames []string) (*excelize.File, error) {
 		_ = workbook.Close()
 		return nil, err
 	}
-	// DataValidation stores Formula1 as inner XML, so comparison operators must
-	// be escaped before the workbook is serialized.
+	// DataValidation 将 Formula1 写入 XML 文本，比较运算符必须预先转义
 	formula := `=OR(AND($B2="",$C2="",$D2="",$E2="",$F2=""),AND($B2="休息",$C2="",$D2="",$E2="",OR($F2="",$F2="否")),AND($B2="工作",$C2&lt;&gt;"",$D2="",$E2=""),AND($B2="工作",$C2="",$D2="",$E2="",OR($F2="",$F2="否")),AND($B2="工作",$C2="",$D2&lt;&gt;"",$E2&lt;&gt;""))`
 	if err := addTemplateCustomValidation(workbook, sheet, "B2:G1000", formula); err != nil {
 		_ = workbook.Close()
@@ -602,6 +624,7 @@ func newScheduleImportTemplate(shiftNames []string) (*excelize.File, error) {
 	return workbook, nil
 }
 
+// addTemplateListValidation 为指定单元格范围设置列表校验和输入提示
 func addTemplateListValidation(workbook *excelize.File, sheet, sqref, source, title, prompt string) error {
 	dv := excelize.NewDataValidation(true)
 	dv.Sqref = sqref
@@ -611,6 +634,7 @@ func addTemplateListValidation(workbook *excelize.File, sheet, sqref, source, ti
 	return workbook.AddDataValidation(sheet, dv)
 }
 
+// addTemplateCustomValidation 为指定单元格范围设置自定义公式校验
 func addTemplateCustomValidation(workbook *excelize.File, sheet, sqref, formula string) error {
 	dv := excelize.NewDataValidation(true)
 	dv.Sqref = sqref
@@ -622,6 +646,7 @@ func addTemplateCustomValidation(workbook *excelize.File, sheet, sqref, formula 
 	return workbook.AddDataValidation(sheet, dv)
 }
 
+// enabledShiftNames 读取工作区启用班次的展示名称供模板选择
 func (s *server) enabledShiftNames(ctx context.Context, workspaceID uint64) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT name FROM shifts WHERE workspace_id = ? AND enabled = TRUE ORDER BY sort_order, id`, workspaceID)
@@ -640,6 +665,7 @@ SELECT name FROM shifts WHERE workspace_id = ? AND enabled = TRUE ORDER BY sort_
 	return names, rows.Err()
 }
 
+// shiftMappings 加载启用班次快照与别名，供工作簿规范化使用
 func (s *server) shiftMappings(ctx context.Context, workspaceID uint64) (map[string]importer.ShiftMapping, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, name, code, TIME_FORMAT(start_time, '%H:%i'), TIME_FORMAT(end_time, '%H:%i'), cross_day, display_color
@@ -684,6 +710,7 @@ FROM shifts WHERE workspace_id = ? AND enabled = TRUE`, workspaceID)
 	return mappings, aliasRows.Err()
 }
 
+// listImports 按工作区及上传者权限返回导入任务摘要
 func (s *server) listImports(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -721,8 +748,10 @@ FROM import_jobs WHERE workspace_id = ?`
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// rowScanner 统一单行查询与结果集的字段解码入口
 type rowScanner interface{ Scan(...any) error }
 
+// scanImportSummary 解码导入摘要查询列，按可空值填充响应字段
 func scanImportSummary(row rowScanner) (gin.H, error) {
 	var id, target uint64
 	var importType, state, start, end, filename string
@@ -743,6 +772,7 @@ func scanImportSummary(row rowScanner) (gin.H, error) {
 	return result, nil
 }
 
+// getImport 校验导入访问范围并返回任务摘要及预览项
 func (s *server) getImport(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -777,10 +807,12 @@ FROM import_jobs WHERE id = ? AND workspace_id = ?`, jobID, workspaceID)
 	success(c, http.StatusOK, job)
 }
 
+// queryer 允许预览读取复用数据库连接池或调用方事务
 type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// loadImportItems 通过数据库或事务读取逐日草稿、版本锚点及人工决定
 func (s *server) loadImportItems(ctx context.Context, db queryer, jobID uint64) ([]importItemRecord, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT id, DATE_FORMAT(work_date, '%Y-%m-%d'), item_type, draft_snapshot, existing_schedule_id, existing_version, COALESCE(decision, ''), issues, error_message
@@ -829,6 +861,7 @@ FROM import_items WHERE import_job_id = ? ORDER BY sort_order, work_date`, jobID
 	return items, rows.Err()
 }
 
+// importItemResponses 解码快照和问题 JSON，构造预览项响应
 func importItemResponses(items []importItemRecord) []gin.H {
 	result := make([]gin.H, 0, len(items))
 	for _, item := range items {
@@ -848,6 +881,7 @@ func importItemResponses(items []importItemRecord) []gin.H {
 	return result
 }
 
+// updateImportDecisions 在事务中保存待审核项目的人工处理决定
 func (s *server) updateImportDecisions(c *gin.Context) {
 	workspaceID, jobID, ok := s.parseImportScope(c)
 	if !ok {
@@ -874,6 +908,7 @@ func (s *server) updateImportDecisions(c *gin.Context) {
 		failure(c, http.StatusConflict, "IMPORT_NOT_REVIEWABLE", "导入任务当前不可修改", nil)
 		return
 	}
+	// 仅新增和冲突项接受显式决定，条目必须属于锁定的待审核任务
 	for _, decision := range request.Decisions {
 		if decision.Decision != "KEEP_EXISTING" && decision.Decision != "USE_IMPORTED" && decision.Decision != "SKIP" {
 			failure(c, http.StatusBadRequest, "INVALID_DECISION", "冲突决策值无效", nil)
@@ -897,10 +932,8 @@ UPDATE import_items SET decision = ? WHERE id = ? AND import_job_id = ? AND item
 	success(c, http.StatusOK, gin.H{"updated": len(request.Decisions)})
 }
 
-// correctImportItem replaces an uncertain, invalid, missing, or otherwise
-// reviewable draft with a fully validated human-entered schedule. The current
-// schedule version becomes the new preview baseline so later changes are still
-// rejected by commitImport as stale.
+// correctImportItem 使用校验通过的人工排班替换可复核草稿
+// 当前排班版本会成为新的预览基线，后续版本变化仍由 commitImport 按过期预览拒绝
 func (s *server) correctImportItem(c *gin.Context) {
 	workspaceID, jobID, ok := s.parseImportScope(c)
 	if !ok {
@@ -939,6 +972,7 @@ func (s *server) correctImportItem(c *gin.Context) {
 		return
 	}
 	date := schedule.MustDate(dateText)
+	// 人工输入重新走班次快照与领域校验，不能直接将请求 JSON 作为可信草稿
 	segments := make([]schedule.Segment, 0, len(request.Segments))
 	for index, item := range request.Segments {
 		segment := schedule.Segment{Type: item.Type, ShiftID: item.ShiftID, CrossDay: item.CrossDay, SortOrder: index}
@@ -979,6 +1013,7 @@ func (s *server) correctImportItem(c *gin.Context) {
 	}
 	draft := storedFromDay(day)
 	draftJSON, _ := json.Marshal(draft)
+	// 以当前锁定排班重新分类，保存新的版本基线并清除已失效的旧决定和问题
 	existing, found, err := queryScheduleTx(c.Request.Context(), tx, workspaceID, targetUserID, date, true)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取现有排班", nil)
@@ -1020,6 +1055,7 @@ WHERE id = ?`, jobID, jobID, jobID); err != nil {
 	success(c, http.StatusOK, response)
 }
 
+// parseImportScope 解析工作区和导入 ID，并检查当前用户的导入访问权限
 func (s *server) parseImportScope(c *gin.Context) (uint64, uint64, bool) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -1035,6 +1071,7 @@ func (s *server) parseImportScope(c *gin.Context) (uint64, uint64, bool) {
 	return workspaceID, jobID, true
 }
 
+// requireImportAccess 限制原始导入资料仅由工作区管理员或上传者访问
 func (s *server) requireImportAccess(c *gin.Context, workspaceID, jobID uint64) bool {
 	member, ok := s.requireWorkspaceMember(c, workspaceID)
 	if !ok {
@@ -1052,11 +1089,14 @@ func (s *server) requireImportAccess(c *gin.Context, workspaceID, jobID uint64) 
 	return true
 }
 
+// commitImport 锁定导入任务与选中排班，重新校验预览版本后原子写入并完成任务
 func (s *server) commitImport(c *gin.Context) {
 	workspaceID, jobID, ok := s.parseImportScope(c)
 	if !ok {
 		return
 	}
+	// 提交会锁定任务及目标日期，并用预览时记录的排班 ID 和版本检测过期数据
+	// 任一条目冲突都会回滚整个导入事务
 	tx, err := s.db.BeginTx(c.Request.Context(), nil)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法提交导入", nil)
@@ -1069,6 +1109,7 @@ func (s *server) commitImport(c *gin.Context) {
 		failure(c, http.StatusNotFound, "IMPORT_NOT_FOUND", "导入任务不存在", nil)
 		return
 	}
+	// 已完成任务直接返回，避免重复请求再次写入排班和修订
 	if state == "COMPLETED" {
 		success(c, http.StatusOK, gin.H{"id": jobID, "state": state})
 		return
@@ -1082,6 +1123,7 @@ func (s *server) commitImport(c *gin.Context) {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取导入预览", nil)
 		return
 	}
+	// 逐项执行人工选择，未处理的冲突阻止整次提交，不确定和缺失项不写入
 	for _, item := range items {
 		if item.Type == "CONFLICT" && item.Decision == "" {
 			failure(c, http.StatusConflict, "UNRESOLVED_CONFLICTS", "仍有冲突尚未处理", gin.H{"itemId": item.ID})
@@ -1093,6 +1135,7 @@ func (s *server) commitImport(c *gin.Context) {
 		if item.Decision == "SKIP" || item.Draft == nil {
 			continue
 		}
+		// 锁定目标日期并比较预览锚点，原本不存在的日期也必须再次确认未被创建
 		current, found, err := queryScheduleTx(c.Request.Context(), tx, workspaceID, targetUserID, item.Date, true)
 		if err != nil {
 			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法锁定现有排班", nil)
@@ -1107,6 +1150,7 @@ func (s *server) commitImport(c *gin.Context) {
 			failure(c, http.StatusConflict, "STALE_PREVIEW", "预览后排班已发生变化，请重新导入", gin.H{"workDate": item.Date.String()})
 			return
 		}
+		// 保存导入前快照与版本，写入排班后记录对应修订以支持整批撤销
 		var beforeJSON any
 		var beforeVersion any
 		if found {
@@ -1134,6 +1178,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, saved.ID, workspaceID, targetUserID, 
 			return
 		}
 	}
+	// 排班和修订写入后才标记任务完成，与所有业务写入一起提交
 	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE import_jobs SET state = 'COMPLETED', completed_at = UTC_TIMESTAMP(6) WHERE id = ?`, jobID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法完成导入任务", nil)
 		return
@@ -1146,11 +1191,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, saved.ID, workspaceID, targetUserID, 
 	success(c, http.StatusOK, gin.H{"id": jobID, "state": "COMPLETED"})
 }
 
+// rollbackImport 核对导入后的版本与来源，全量恢复原快照或删除该次创建的排班
 func (s *server) rollbackImport(c *gin.Context) {
 	workspaceID, jobID, ok := s.parseImportScope(c)
 	if !ok {
 		return
 	}
+	// 回滚仅处理仍由本次导入拥有且版本未变化的排班，避免覆盖后续人工修改
 	tx, err := s.db.BeginTx(c.Request.Context(), nil)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法回滚导入", nil)
@@ -1171,6 +1218,7 @@ func (s *server) rollbackImport(c *gin.Context) {
 		failure(c, http.StatusConflict, "IMPORT_NOT_ROLLBACKABLE", "只有已完成导入可以回滚", nil)
 		return
 	}
+	// 按修订倒序加载本次导入的写入结果，全部读完并关闭游标后再修改排班
 	rows, err := tx.QueryContext(c.Request.Context(), `
 SELECT DATE_FORMAT(work_date, '%Y-%m-%d'), before_snapshot, after_snapshot, after_version
 FROM schedule_revisions WHERE import_job_id = ? AND change_type IN ('IMPORT_CREATE', 'IMPORT_UPDATE') ORDER BY id DESC`, jobID)
@@ -1196,12 +1244,14 @@ FROM schedule_revisions WHERE import_job_id = ? AND change_type IN ('IMPORT_CREA
 		revisions = append(revisions, item)
 	}
 	rows.Close()
+	// 逐日核对当前版本和导入来源，任一后续修改都会使整个撤销事务回滚
 	for _, revision := range revisions {
 		current, found, err := queryScheduleTx(c.Request.Context(), tx, workspaceID, targetUserID, revision.date, true)
 		if err != nil || !found || current.Version != revision.afterVersion || current.SourceImportID == nil || *current.SourceImportID != jobID {
 			failure(c, http.StatusConflict, "ROLLBACK_CONFLICT", "导入后的排班已被修改，不能自动回滚", gin.H{"workDate": revision.date.String()})
 			return
 		}
+		// 没有前快照表示本次导入创建了排班，撤销时删除记录并写删除修订
 		if len(revision.before) == 0 {
 			if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM schedule_days WHERE id = ?`, current.ID); err != nil {
 				failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法删除导入新增排班", nil)
@@ -1216,6 +1266,7 @@ VALUES (NULL, ?, ?, ?, ?, NULL, ?, NULL, 'IMPORT_ROLLBACK_DELETE', ?, ?)`, works
 			}
 			continue
 		}
+		// 有前快照时恢复原业务内容但继续递增版本，避免旧客户端版本重新有效
 		var prior storedSchedule
 		if err := json.Unmarshal(revision.before, &prior); err != nil {
 			failure(c, http.StatusInternalServerError, "INVALID_REVISION", "历史排班快照损坏", nil)
@@ -1237,6 +1288,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IMPORT_ROLLBACK_RESTORE', ?, ?)`, current.ID, w
 			return
 		}
 	}
+	// 所有目标日期处理成功后，与任务撤销状态一并提交事务
 	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE import_jobs SET state = 'ROLLED_BACK', rolled_back_at = UTC_TIMESTAMP(6) WHERE id = ?`, jobID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法完成回滚", nil)
 		return
@@ -1249,11 +1301,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IMPORT_ROLLBACK_RESTORE', ?, ?)`, current.ID, w
 	success(c, http.StatusOK, gin.H{"id": jobID, "state": "ROLLED_BACK"})
 }
 
+// storedFromEntry 提取导入草稿的排班内容用于持久化快照
 func storedFromEntry(entry importer.Entry) storedSchedule {
 	day := schedule.Day{Status: entry.Status, Note: entry.Note, Segments: entry.Segments}
 	return storedFromDay(day)
 }
 
+// storedFromDay 提取正式排班内容用于比较和修订快照
 func storedFromDay(day schedule.Day) storedSchedule {
 	segments := make([]storedSegment, 0, len(day.Segments))
 	ordered := append([]schedule.Segment(nil), day.Segments...)
@@ -1269,6 +1323,7 @@ func storedFromDay(day schedule.Day) storedSchedule {
 	return storedSchedule{Status: day.Status, SourceType: day.SourceType, SourceImportID: day.SourceImportID, Note: day.Note, CreatedBy: day.CreatedBy, Segments: segments}
 }
 
+// dayFromStored 将快照还原为指定用户、日期和工作区上下文中的领域排班
 func dayFromStored(stored storedSchedule, workspaceID, userID uint64, date schedule.Date) schedule.Day {
 	day := schedule.Day{WorkspaceID: workspaceID, UserID: userID, WorkDate: date, Status: stored.Status, SourceType: stored.SourceType,
 		SourceImportID: stored.SourceImportID, Note: stored.Note, CreatedBy: stored.CreatedBy, Segments: make([]schedule.Segment, 0, len(stored.Segments))}
@@ -1285,6 +1340,7 @@ func dayFromStored(stored storedSchedule, workspaceID, userID uint64, date sched
 	return day
 }
 
+// schedulesEquivalent 按规范化后的业务内容比较排班，忽略来源与记录元数据
 func schedulesEquivalent(left, right storedSchedule) bool {
 	if left.Status != right.Status || strings.TrimSpace(left.Note) != strings.TrimSpace(right.Note) || len(left.Segments) != len(right.Segments) {
 		return false
@@ -1298,11 +1354,14 @@ func schedulesEquivalent(left, right storedSchedule) bool {
 	return true
 }
 
+// equalUintPtr 比较可空整数指针的值，区分空值与零值
 func equalUintPtr(left, right *uint64) bool {
 	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
+// queryScheduleTx 在事务中按用户与日期读取全局排班，lock 控制是否加行锁
 func queryScheduleTx(ctx context.Context, tx *sql.Tx, workspaceID, userID uint64, date schedule.Date, lock bool) (schedule.Day, bool, error) {
+	// 排班按用户和日期全局唯一，workspaceID 仅保留当前请求及版本记录的工作区上下文
 	query := `
 SELECT id, status, source_type, source_import_id, note, version, created_by
 FROM schedule_days WHERE user_id = ? AND work_date = ?`
@@ -1330,6 +1389,7 @@ FROM schedule_days WHERE user_id = ? AND work_date = ?`
 	return day, true, nil
 }
 
+// querySegmentsTx 在调用方事务内读取排班的全部时间段
 func querySegmentsTx(ctx context.Context, tx *sql.Tx, dayID uint64) ([]schedule.Segment, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT id, segment_type, shift_id, COALESCE(shift_name_snapshot, ''), COALESCE(shift_code_snapshot, ''),
@@ -1363,6 +1423,7 @@ FROM schedule_segments WHERE schedule_day_id = ? ORDER BY sort_order, id`, dayID
 	return segments, rows.Err()
 }
 
+// writeScheduleTx 在调用方事务中创建或更新排班及时间段，事务提交由调用方负责
 func writeScheduleTx(ctx context.Context, tx *sql.Tx, day, existing schedule.Day, found bool) (schedule.Day, error) {
 	if found {
 		day.ID, day.Version = existing.ID, existing.Version+1

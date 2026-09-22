@@ -10,6 +10,7 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
+// TestMySQLRepositoryRecoversExpiredLeaseAndCompletesAtomically 验证过期租约可领取及任务预览原子完成
 func TestMySQLRepositoryRecoversExpiredLeaseAndCompletesAtomically(t *testing.T) {
 	db := openWorkerTestDatabase(t)
 	seedWorkerJob(t, db, "PARSING", time.Now().UTC().Add(-time.Minute))
@@ -35,6 +36,7 @@ func TestMySQLRepositoryRecoversExpiredLeaseAndCompletesAtomically(t *testing.T)
 	}
 }
 
+// openWorkerTestDatabase 连接并清理 Worker 专用测试数据库，注册连接清理回调
 func openWorkerTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	admin, err := database.Open(context.Background(), "root:123456@tcp(127.0.0.1:3306)/mysql?charset=utf8mb4&parseTime=true&loc=UTC")
@@ -66,6 +68,7 @@ func openWorkerTestDatabase(t *testing.T) *sql.DB {
 	return db
 }
 
+// seedWorkerJob 插入工作区、用户和指定状态的图片任务作为测试数据
 func seedWorkerJob(t *testing.T, db *sql.DB, state string, leaseExpires time.Time) {
 	t.Helper()
 	result, err := db.Exec(`INSERT INTO users (username, username_normalized, email, email_normalized, display_name, password_hash) VALUES ('worker-user', 'worker-user', 'worker@example.com', 'worker@example.com', 'Worker', 'hash')`)

@@ -1,3 +1,4 @@
+// Package jwtkeys 负责 JWT 密钥对的加载、匹配校验与本地文件持久化
 package jwtkeys
 
 import (
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 )
 
+// LoadOrCreate 读取匹配的 Ed25519 密钥对，两文件均不存在时生成并持久化
 func LoadOrCreate(privatePath, publicPath string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	privateExists := fileExists(privatePath)
 	publicExists := fileExists(publicPath)
@@ -26,12 +28,14 @@ func LoadOrCreate(privatePath, publicPath string) (ed25519.PrivateKey, ed25519.P
 		if err != nil {
 			return nil, nil, err
 		}
+		// 公私钥必须成对且相互匹配，避免签发后生成无法验证的令牌
 		derived := privateKey.Public().(ed25519.PublicKey)
 		if !derived.Equal(publicKey) {
 			return nil, nil, errors.New("JWT public key does not match private key")
 		}
 		return privateKey, publicKey, nil
 	}
+	// 仅在密钥对均未找到时生成；公钥写入失败会尝试删除刚写入的私钥
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, err
@@ -54,11 +58,13 @@ func LoadOrCreate(privatePath, publicPath string) (ed25519.PrivateKey, ed25519.P
 	return privateKey, publicKey, nil
 }
 
+// fileExists 报告路径是否可被 os.Stat 访问，访问错误返回 false
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
+// readPrivate 从 PEM 中解析 PKCS8 格式的 Ed25519 私钥
 func readPrivate(path string) (ed25519.PrivateKey, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -79,6 +85,7 @@ func readPrivate(path string) (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
+// readPublic 从 PEM 中解析 PKIX 格式的 Ed25519 公钥
 func readPublic(path string) (ed25519.PublicKey, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -99,10 +106,12 @@ func readPublic(path string) (ed25519.PublicKey, error) {
 	return key, nil
 }
 
+// writePrivateFile 按指定权限写入同目录临时文件，再通过重命名发布密钥
 func writePrivateFile(path string, content []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// 临时文件与目标位于同一目录，关闭后重命名可避免暴露未写完的密钥
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".jwt-key-*")
 	if err != nil {
 		return err

@@ -7,8 +7,7 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
-// ValidationError describes a user-correctable workbook value without tying
-// the importer to an HTTP or UI representation.
+// ValidationError 描述用户可修正的工作簿数据错误，不包含 HTTP 或 UI 表示细节
 type ValidationError struct {
 	Row     int
 	Fields  []string
@@ -18,6 +17,7 @@ type ValidationError struct {
 	Cause   error
 }
 
+// Error 返回包含行号与问题说明的校验错误文本
 func (e *ValidationError) Error() string {
 	if e == nil {
 		return ""
@@ -28,12 +28,15 @@ func (e *ValidationError) Error() string {
 	return e.Message
 }
 
+// Unwrap 暴露底层领域错误以支持 errors.Is 与 errors.As
 func (e *ValidationError) Unwrap() error { return e.Cause }
 
+// rowValidationError 组装带行号、字段、规则码和修复提示的工作簿错误
 func rowValidationError(row int, fields []string, code, message, hint string, cause error) error {
 	return &ValidationError{Row: row, Fields: fields, Code: code, Message: message, Hint: hint, Cause: cause}
 }
 
+// scheduleValidationDetails 将已知排班规则错误映射为用户可读说明与修复提示
 func scheduleValidationDetails(err error) (code, message, hint string) {
 	switch {
 	case errors.Is(err, schedule.ErrOverlappingSegments):

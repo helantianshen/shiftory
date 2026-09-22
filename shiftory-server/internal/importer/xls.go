@@ -8,6 +8,7 @@ import (
 	"github.com/extrame/xls"
 )
 
+// ReadXLS 在文件和行列限制内读取旧版 XLS 的首个工作表
 func ReadXLS(reader io.Reader, limits Limits) (WorkbookData, error) {
 	data, err := readLimited(reader, limits.MaxBytes)
 	if err != nil {

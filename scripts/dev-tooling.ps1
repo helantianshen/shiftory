@@ -1,3 +1,5 @@
+# 开发工具解析与命令转义函数，供启动器及其测试共同使用
+# Resolve-PnpmInvocation 按 pnpm、Corepack、npm 顺序选择运行入口，npm 后备入口使用指定的精确版本
 function Resolve-PnpmInvocation {
     param(
         [Parameter(Mandatory)]
@@ -39,11 +41,13 @@ function Resolve-PnpmInvocation {
     throw "Node.js with npm was not found in PATH. Install a supported Node.js version (including npm) before starting the frontend."
 }
 
+# ConvertTo-PowerShellLiteral 将字符串编码为单引号字面量，保留路径中的空格和单引号
 function ConvertTo-PowerShellLiteral {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+# Format-PowerShellInvocation 将程序路径与全部参数分别转义后组成子进程命令
 function Format-PowerShellInvocation {
     param(
         [Parameter(Mandatory)]$Invocation,

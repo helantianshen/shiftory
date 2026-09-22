@@ -1,15 +1,23 @@
 package config
 
 import (
+	"errors"
+	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
+// clearConfigEnvironment 清理测试涉及的进程配置变量，并由测试框架恢复原值
 func clearConfigEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"SHIFTORY_ENV_FILE",
+		"SHIFTORY_ENV",
+		"SHIFTORY_LOG_LEVEL",
+		"SHIFTORY_LOG_FORMAT",
 		"SHIFTORY_HTTP_ADDR",
 		"SHIFTORY_DATABASE_DSN",
 		"SHIFTORY_UPLOAD_DIR",
@@ -33,164 +41,252 @@ func clearConfigEnvironment(t *testing.T) {
 	}
 }
 
-func TestLoadUsesLocalDefaults(t *testing.T) {
+// writeConfig 在测试目录写入 YAML 配置样本
+func writeConfig(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLoadProfiles 验证默认生产模式及显式开发、生产模式选择
+func TestLoadProfiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, environment, level, format, addr string
+		args                                   []string
+	}{
+		{"default", "production", "info", "json", ":8081", nil},
+		{"production", "production", "info", "json", ":8081", []string{"--env", "production"}},
+		{"development", "development", "debug", "text", ":9091", []string{"--env=development"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearConfigEnvironment(t)
+			t.Chdir(t.TempDir())
+			writeConfig(t, "config/production.yaml", "http_addr: ':8081'\n")
+			writeConfig(t, "config/development.yaml", "http_addr: ':9091'\n")
+			// 模式只能由启动参数选择，SHIFTORY_ENV 不得覆盖参数或默认值
+			t.Setenv("SHIFTORY_ENV", "development")
+			cfg, err := Load(tc.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Environment != tc.environment || cfg.LogLevel != tc.level || cfg.LogFormat != tc.format || cfg.HTTPAddr != tc.addr {
+				t.Fatalf("unexpected profile: %+v", cfg)
+			}
+		})
+	}
+}
+
+// TestLoadDefaultsAndIgnoresEnvFiles 验证内置默认值以及后端不读取 env 文件
+func TestLoadDefaultsAndIgnoresEnvFiles(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Chdir(t.TempDir())
-
+	for _, name := range []string{".env", ".env.local", ".env.production", ".env.development", "shiftory.env"} {
+		writeConfig(t, name, "SHIFTORY_HTTP_ADDR=:9191\nSHIFTORY_LOG_LEVEL=debug\n")
+	}
+	t.Setenv("SHIFTORY_ENV_FILE", "shiftory.env")
+	writeConfig(t, "config/development.yaml", "http_addr: ':9091'\n")
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":8080" {
-		t.Fatalf("unexpected HTTP address %q", cfg.HTTPAddr)
+	if cfg.Environment != "production" || cfg.HTTPAddr != ":8080" || cfg.LogLevel != "info" || cfg.LogFormat != "json" || cfg.AIEnabled {
+		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if cfg.DatabaseDSN == "" || cfg.UploadDir == "" {
-		t.Fatalf("required defaults missing: %+v", cfg)
+		t.Fatal("required defaults missing")
 	}
 }
 
-func TestLoadUsesExplicitEnvFileForMissingEnvironment(t *testing.T) {
-	clearConfigEnvironment(t)
-	envFile := filepath.Join(t.TempDir(), "shiftory.env")
-	if err := os.WriteFile(envFile, []byte("SHIFTORY_HTTP_ADDR=127.0.0.1:9090\nSHIFTORY_AI_MODEL='vision-test'\nSHIFTORY_AI_API_KEY=test-key\n"), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-	t.Setenv("SHIFTORY_ENV_FILE", envFile)
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if cfg.HTTPAddr != "127.0.0.1:9090" || cfg.AIModel != "vision-test" || cfg.AIAPIKey != "test-key" {
-		t.Fatalf("env file values were not loaded: %+v", cfg)
-	}
-}
-
-func TestLoadEnvironmentOverridesExplicitEnvFile(t *testing.T) {
-	clearConfigEnvironment(t)
-	envFile := filepath.Join(t.TempDir(), "shiftory.env")
-	if err := os.WriteFile(envFile, []byte("SHIFTORY_HTTP_ADDR=127.0.0.1:9090\nSHIFTORY_PUBLIC_ORIGIN=https://from-file.example\n"), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-	t.Setenv("SHIFTORY_ENV_FILE", envFile)
-	t.Setenv("SHIFTORY_HTTP_ADDR", ":7070")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if cfg.HTTPAddr != ":7070" {
-		t.Fatalf("system environment was overwritten by env file: %q", cfg.HTTPAddr)
-	}
-}
-
-func TestLoadAutomaticallyFindsDevelopmentEnvNearWorkingDirectory(t *testing.T) {
-	clearConfigEnvironment(t)
-	workingDirectory := t.TempDir()
-	t.Chdir(workingDirectory)
-	if err := os.WriteFile(filepath.Join(workingDirectory, ".env.development"), []byte("SHIFTORY_HTTP_ADDR=127.0.0.1:9191\n"), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if cfg.HTTPAddr != "127.0.0.1:9191" {
-		t.Fatalf("automatic env discovery returned %q", cfg.HTTPAddr)
+// TestLoadFindsNearestProfile 验证逐级发现首个模式配置文件的规则
+func TestLoadFindsNearestProfile(t *testing.T) {
+	for _, depth := range []int{0, 1, 2} {
+		t.Run(string(rune('0'+depth)), func(t *testing.T) {
+			clearConfigEnvironment(t)
+			root := t.TempDir()
+			writeConfig(t, filepath.Join(root, "config/development.yaml"), "http_addr: ':9292'\n")
+			cwd := root
+			for i := 0; i < depth; i++ {
+				cwd = filepath.Join(cwd, "nested")
+			}
+			if err := os.MkdirAll(cwd, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(cwd)
+			cfg, err := Load("--env", "development")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.HTTPAddr != ":9292" {
+				t.Fatalf("profile not found: %q", cfg.HTTPAddr)
+			}
+			writeConfig(t, "config/development.yaml", "http_addr: ':9393'\n")
+			cfg, err = Load("--env", "development")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.HTTPAddr != ":9393" {
+				t.Fatalf("nearest profile not selected: %q", cfg.HTTPAddr)
+			}
+		})
 	}
 }
 
-func TestLoadAutomaticallyFindsDevelopmentEnvInParentDirectory(t *testing.T) {
-	clearConfigEnvironment(t)
-	parentDirectory := t.TempDir()
-	workingDirectory := filepath.Join(parentDirectory, "shiftory-server")
-	if err := os.Mkdir(workingDirectory, 0o700); err != nil {
-		t.Fatalf("create working directory: %v", err)
-	}
-	t.Chdir(workingDirectory)
-	if err := os.WriteFile(filepath.Join(parentDirectory, ".env.development"), []byte("SHIFTORY_HTTP_ADDR=127.0.0.1:9292\n"), 0o600); err != nil {
-		t.Fatalf("write parent env file: %v", err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if cfg.HTTPAddr != "127.0.0.1:9292" {
-		t.Fatalf("parent env discovery returned %q", cfg.HTTPAddr)
-	}
-}
-
-func TestLoadRejectsMissingExplicitEnvFile(t *testing.T) {
+// TestLoadExplicitYAMLAndEnvironmentOverrides 验证显式 YAML 与非空进程环境变量的覆盖顺序
+func TestLoadExplicitYAMLAndEnvironmentOverrides(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Chdir(t.TempDir())
-	t.Setenv("SHIFTORY_ENV_FILE", filepath.Join(t.TempDir(), "missing.env"))
-
-	if _, err := Load(); err == nil {
-		t.Fatal("missing explicitly configured env file should fail config loading")
-	}
-}
-
-func TestLoadRejectsMalformedExplicitEnvFile(t *testing.T) {
-	clearConfigEnvironment(t)
-	envFile := filepath.Join(t.TempDir(), "shiftory.env")
-	if err := os.WriteFile(envFile, []byte("not-an-environment-entry\n"), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-	t.Setenv("SHIFTORY_ENV_FILE", envFile)
-
-	if _, err := Load(); err == nil {
-		t.Fatal("malformed explicitly configured env file should fail config loading")
-	}
-}
-
-func TestLoadParsesWorkerSettingsFromEnvFile(t *testing.T) {
-	clearConfigEnvironment(t)
-	envFile := filepath.Join(t.TempDir(), "shiftory.env")
-	if err := os.WriteFile(envFile, []byte("SHIFTORY_WORKER_POLL_INTERVAL=7s\nSHIFTORY_WORKER_LEASE=3m\nSHIFTORY_WORKER_MAX_CONCURRENCY=4\nSHIFTORY_AI_REQUEST_TIMEOUT=45s\nSHIFTORY_AI_ENABLED=true\n"), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-	t.Setenv("SHIFTORY_ENV_FILE", envFile)
-
-	cfg, err := Load()
+	content := `log_level: warn
+log_format: text
+http_addr: ':9090'
+database_dsn: 'user:password@tcp(localhost:3306)/test'
+upload_dir: ./data/uploads
+web_dir: ./web
+public_origin: https://from-file.example
+jwt_issuer: test-issuer
+jwt_audience: test-audience
+jwt_private_key_file: ./keys/private.pem
+jwt_public_key_file: ./keys/public.pem
+ai_model: vision-test
+ai_base_url: https://ai.example/v1
+ai_api_key: test-key
+ai_enabled: true
+ai_request_timeout: 45s
+worker_id: test-worker
+worker_poll_interval: 7s
+worker_lease: 3m
+worker_max_concurrency: 4
+`
+	writeConfig(t, "selected config.yml", content)
+	writeConfig(t, "config/production.yaml", "http_addr: ':9191'\n")
+	cfg, err := Load("--config", "selected config.yml")
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.WorkerPollPeriod.String() != "7s" || cfg.WorkerLease.String() != "3m0s" || cfg.WorkerMaxConcurrency != 4 || cfg.AIRequestTimeout.String() != "45s" || !cfg.AIEnabled {
-		t.Fatalf("worker settings were not parsed: %+v", cfg)
+	if cfg.Environment != "production" || cfg.LogLevel != "warn" || cfg.LogFormat != "text" || cfg.HTTPAddr != ":9090" || cfg.DatabaseDSN != "user:password@tcp(localhost:3306)/test" || cfg.UploadDir != "./data/uploads" || cfg.WebDir != "./web" || cfg.PublicOrigin != "https://from-file.example" || cfg.JWTIssuer != "test-issuer" || cfg.JWTAudience != "test-audience" || cfg.JWTPrivateKey != "./keys/private.pem" || cfg.JWTPublicKey != "./keys/public.pem" || cfg.AIModel != "vision-test" || cfg.AIBaseURL != "https://ai.example/v1" || cfg.AIAPIKey != "test-key" || !cfg.AIEnabled || cfg.AIRequestTimeout.String() != "45s" || cfg.WorkerID != "test-worker" || cfg.WorkerPollPeriod.String() != "7s" || cfg.WorkerLease.String() != "3m0s" || cfg.WorkerMaxConcurrency != 4 {
+		t.Fatalf("YAML values were not loaded: %+v", cfg)
+	}
+	if os.Getenv("SHIFTORY_HTTP_ADDR") != "" {
+		t.Fatal("loading mutated process environment")
+	}
+	values, err := parseYAMLFile("selected config.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	writeConfig(t, "empty.yaml", "{}\n")
+	fromEnv, err := Load("--config", "empty.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg, fromEnv) {
+		t.Fatal("environment and YAML settings differ")
+	}
+	t.Setenv("SHIFTORY_HTTP_ADDR", ":7070")
+	t.Setenv("SHIFTORY_AI_ENABLED", "false")
+	t.Setenv("SHIFTORY_WORKER_MAX_CONCURRENCY", "6")
+	t.Setenv("SHIFTORY_WORKER_LEASE", "4m")
+	cfg, err = Load("--config", "selected config.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPAddr != ":7070" || cfg.AIEnabled || cfg.WorkerMaxConcurrency != 6 || cfg.WorkerLease.String() != "4m0s" {
+		t.Fatalf("environment did not override YAML: %+v", cfg)
+	}
+	t.Setenv("SHIFTORY_HTTP_ADDR", "  ")
+	cfg, err = Load("--config", "selected config.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPAddr != ":9090" {
+		t.Fatal("empty environment should fall back to YAML")
 	}
 }
 
-func TestLoadRejectsInvalidWorkerConcurrency(t *testing.T) {
+// TestLoadRejectsInvalidArguments 验证非法模式、未知参数和额外位置参数被拒绝
+func TestLoadRejectsInvalidArguments(t *testing.T) {
 	clearConfigEnvironment(t)
-	envFile := filepath.Join(t.TempDir(), "shiftory.env")
-	if err := os.WriteFile(envFile, []byte("SHIFTORY_WORKER_MAX_CONCURRENCY=0\n"), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
+	t.Chdir(t.TempDir())
+	for _, args := range [][]string{
+		{"--env", "staging"}, {"--env="}, {"--env"}, {"--unknown"}, {"development"},
+		{"--config", "missing.yaml"}, {"--config", "legacy.env"},
+	} {
+		if _, err := Load(args...); err == nil {
+			t.Errorf("expected error for %v", args)
+		}
 	}
-	t.Setenv("SHIFTORY_ENV_FILE", envFile)
-
-	if _, err := Load(); err == nil {
-		t.Fatal("invalid worker concurrency should fail config loading")
+	if _, err := Load("--help"); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("help: %v", err)
 	}
 }
 
-func TestLoadRejectsInvalidAIEnabledValue(t *testing.T) {
+// TestLoadRejectsInvalidYAML 验证非法 YAML、未知字段和不支持的文件形式被拒绝
+func TestLoadRejectsInvalidYAML(t *testing.T) {
+	for _, content := range []string{
+		"http_addr: [", "http_addr: ':8080'\nhttp_addr: ':9090'\n", "unknown: value\n",
+		"http_addr: [a, b]\n", "http_addr: {nested: value}\n", "- value\n", "null\n", "",
+		"http_addr: ':8080'\n---\nhttp_addr: ':9090'\n", "env: development\n",
+	} {
+		t.Run(content, func(t *testing.T) {
+			clearConfigEnvironment(t)
+			t.Chdir(t.TempDir())
+			writeConfig(t, "invalid.yaml", content)
+			if _, err := Load("--config", "invalid.yaml"); err == nil {
+				t.Fatal("invalid YAML accepted")
+			}
+			writeConfig(t, "config/production.yaml", content)
+			if _, err := Load(); err == nil {
+				t.Fatal("invalid automatically discovered YAML accepted")
+			}
+		})
+	}
+}
+
+// TestLoadRejectsInvalidSettings 验证无效日志、时间、并发与来源设置被拒绝
+func TestLoadRejectsInvalidSettings(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"log_level", "verbose"}, {"log_format", "xml"}, {"public_origin", "not-a-url"},
+		{"worker_max_concurrency", "0"}, {"worker_max_concurrency", "-1"}, {"worker_max_concurrency", "1.5"},
+		{"worker_lease", "0s"}, {"worker_poll_interval", "-1s"}, {"ai_request_timeout", "oops"}, {"ai_enabled", "maybe"},
+	} {
+		t.Run(tc.key+tc.value, func(t *testing.T) {
+			clearConfigEnvironment(t)
+			t.Chdir(t.TempDir())
+			writeConfig(t, "invalid.yaml", tc.key+": '"+tc.value+"'\n")
+			if _, err := Load("--config", "invalid.yaml"); err == nil {
+				t.Fatal("invalid YAML setting accepted")
+			}
+			t.Setenv("SHIFTORY_"+strings.ToUpper(tc.key), tc.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("invalid environment setting accepted")
+			}
+		})
+	}
+}
+
+// TestDistributedYAMLExamples 验证随仓库分发的开发和生产 YAML 样例可以加载
+func TestDistributedYAMLExamples(t *testing.T) {
 	clearConfigEnvironment(t)
-	envFile := filepath.Join(t.TempDir(), "shiftory.env")
-	if err := os.WriteFile(envFile, []byte("SHIFTORY_AI_ENABLED=maybe\n"), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-	t.Setenv("SHIFTORY_ENV_FILE", envFile)
-
-	if _, err := Load(); err == nil {
-		t.Fatal("invalid AI enabled value should fail config loading")
-	}
-}
-
-func TestLoadRejectsInvalidPublicOrigin(t *testing.T) {
-	t.Setenv("SHIFTORY_PUBLIC_ORIGIN", "not-a-url")
-	if _, err := Load(); err == nil {
-		t.Fatal("expected invalid origin to fail")
+	for _, environment := range []string{"development", "production"} {
+		path := filepath.Join("..", "..", "..", "..", "config", environment+".example.yaml")
+		values, err := parseYAMLFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(values) != len(yamlKeys) {
+			t.Fatalf("%s does not document every supported YAML setting", path)
+		}
+		cfg, err := Load("--env", environment, "--config", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Environment != environment || cfg.AIEnabled || cfg.AIAPIKey != "" {
+			t.Fatalf("%s has unexpected profile or AI defaults", path)
+		}
 	}
 }

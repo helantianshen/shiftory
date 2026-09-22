@@ -1,5 +1,5 @@
 -- +goose Up
--- Reset schedule/import business data; personal schedules are unique per user/date.
+-- 该迁移清空排班与导入业务数据，迁移后排班按用户与日期保持唯一
 DELETE FROM schedule_revisions;
 DELETE FROM schedule_segments;
 DELETE FROM schedule_days;

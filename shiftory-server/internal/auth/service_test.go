@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// TestServiceRegisterLoginRefreshAndReplayProtection 覆盖注册、登录、刷新轮换和旧令牌重放后的整族撤销
 func TestServiceRegisterLoginRefreshAndReplayProtection(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemoryRepository()
@@ -45,6 +46,7 @@ func TestServiceRegisterLoginRefreshAndReplayProtection(t *testing.T) {
 	}
 }
 
+// TestServiceRejectsDuplicateAndDisabledUsers 覆盖重复注册与停用账号登录的拒绝行为
 func TestServiceRejectsDuplicateAndDisabledUsers(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemoryRepository()
@@ -73,10 +75,12 @@ type memoryRepository struct {
 	nextID   uint64
 }
 
+// newMemoryRepository 创建独立的内存认证仓储供服务测试使用
 func newMemoryRepository() *memoryRepository {
 	return &memoryRepository{users: map[uint64]User{}, byLogin: map[string]uint64{}, tokens: map[[32]byte]RefreshRecord{}, families: map[string]bool{}, nextID: 1}
 }
 
+// CreateUser 模拟用户写入及规范化登录名唯一性检查
 func (r *memoryRepository) CreateUser(_ context.Context, user User) (User, error) {
 	if _, ok := r.byLogin[user.UsernameNormalized]; ok {
 		return User{}, ErrUserExists
@@ -92,6 +96,7 @@ func (r *memoryRepository) CreateUser(_ context.Context, user User) (User, error
 	return user, nil
 }
 
+// FindUserByLogin 按内存索引查询用户，缺失时返回无效凭据
 func (r *memoryRepository) FindUserByLogin(_ context.Context, login string) (User, error) {
 	id, ok := r.byLogin[login]
 	if !ok {
@@ -100,6 +105,7 @@ func (r *memoryRepository) FindUserByLogin(_ context.Context, login string) (Use
 	return r.users[id], nil
 }
 
+// FindUserByID 按内存用户 ID 查询记录，缺失时返回无效凭据
 func (r *memoryRepository) FindUserByID(_ context.Context, id uint64) (User, error) {
 	user, ok := r.users[id]
 	if !ok {
@@ -108,6 +114,7 @@ func (r *memoryRepository) FindUserByID(_ context.Context, id uint64) (User, err
 	return user, nil
 }
 
+// UpdateProfile 更新内存用户的展示名与头像
 func (r *memoryRepository) UpdateProfile(_ context.Context, id uint64, displayName, avatarURL string) (User, error) {
 	user, ok := r.users[id]
 	if !ok {
@@ -118,6 +125,7 @@ func (r *memoryRepository) UpdateProfile(_ context.Context, id uint64, displayNa
 	return user, nil
 }
 
+// UpdatePassword 更新测试用户的密码摘要与时间，不模拟生产仓储的令牌撤销
 func (r *memoryRepository) UpdatePassword(_ context.Context, id uint64, passwordHash string, changedAt time.Time) error {
 	user, ok := r.users[id]
 	if !ok {
@@ -128,11 +136,13 @@ func (r *memoryRepository) UpdatePassword(_ context.Context, id uint64, password
 	return nil
 }
 
+// StoreRefresh 将刷新记录按令牌哈希写入内存
 func (r *memoryRepository) StoreRefresh(_ context.Context, record RefreshRecord) error {
 	r.tokens[record.TokenHash] = record
 	return nil
 }
 
+// ConsumeRefresh 模拟令牌族撤销和重复消费检测，记录替代令牌标识
 func (r *memoryRepository) ConsumeRefresh(_ context.Context, hash [32]byte, usedAt time.Time, replacementJWTID string) (RefreshRecord, error) {
 	record, ok := r.tokens[hash]
 	if !ok {
@@ -150,6 +160,7 @@ func (r *memoryRepository) ConsumeRefresh(_ context.Context, hash [32]byte, used
 	return record, nil
 }
 
+// RevokeFamily 在内存中标记令牌族已撤销
 func (r *memoryRepository) RevokeFamily(_ context.Context, familyID string, _ time.Time) error {
 	r.families[familyID] = true
 	return nil

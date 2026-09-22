@@ -15,6 +15,7 @@ import (
 
 var colorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
+// shiftRequest 承载班次定义、展示设置与识别别名
 type shiftRequest struct {
 	Name         string   `json:"name" binding:"required"`
 	Code         string   `json:"code" binding:"required"`
@@ -27,6 +28,7 @@ type shiftRequest struct {
 	Aliases      []string `json:"aliases"`
 }
 
+// createShift 校验班次时间和管理员权限，在事务中保存班次与去重别名
 func (s *server) createShift(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -51,6 +53,7 @@ func (s *server) createShift(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_SHIFT", "班次名称、代码或颜色无效", nil)
 		return
 	}
+	// 班次时间可以整体省略，提供时必须成对且与显式跨日标记一致
 	if (request.StartTime == nil) != (request.EndTime == nil) {
 		failure(c, http.StatusBadRequest, "INVALID_SHIFT_TIME", "开始和结束时间必须同时填写", nil)
 		return
@@ -94,6 +97,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, workspaceID, request.Name, request.Code,
 		return
 	}
 	shiftID, _ := result.LastInsertId()
+	// 本次别名先忽略大小写去重，跨班次唯一性再由数据库约束检查
 	seen := map[string]bool{}
 	for _, alias := range request.Aliases {
 		alias = strings.TrimSpace(alias)
@@ -121,6 +125,7 @@ INSERT INTO shift_aliases (workspace_id, shift_id, alias, alias_normalized) VALU
 	success(c, http.StatusCreated, gin.H{"id": uint64(shiftID), "name": request.Name, "code": request.Code, "startTime": request.StartTime, "endTime": request.EndTime, "crossDay": request.CrossDay, "displayColor": request.DisplayColor, "enabled": enabled, "sortOrder": request.SortOrder, "aliases": request.Aliases})
 }
 
+// listShifts 向有效成员返回工作区班次及其别名
 func (s *server) listShifts(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -163,6 +168,7 @@ FROM shifts WHERE workspace_id = ? ORDER BY sort_order, id`, workspaceID)
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// shiftAliases 读取指定班次的别名列表
 func (s *server) shiftAliases(shiftID uint64) ([]string, error) {
 	rows, err := s.db.Query(`SELECT alias FROM shift_aliases WHERE shift_id = ? ORDER BY id`, shiftID)
 	if err != nil {

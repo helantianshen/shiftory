@@ -11,6 +11,7 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
+// TestReadXLSAndNormalizeFixedTemplate 验证旧版 XLS 固定模板读取与规范化
 func TestReadXLSAndNormalizeFixedTemplate(t *testing.T) {
 	file, err := os.Open("testdata/schedule.xls")
 	if err != nil {
@@ -30,6 +31,7 @@ func TestReadXLSAndNormalizeFixedTemplate(t *testing.T) {
 	}
 }
 
+// TestReadXLSXAndNormalizeFixedTemplate 验证 XLSX 固定模板读取与同日时间段规范化
 func TestReadXLSXAndNormalizeFixedTemplate(t *testing.T) {
 	file := excelize.NewFile()
 	sheet := file.GetSheetName(0)
@@ -77,6 +79,7 @@ func TestReadXLSXAndNormalizeFixedTemplate(t *testing.T) {
 	}
 }
 
+// TestNormalizeRejectsRestWithWorkDetails 验证休息日不能携带工作详情
 func TestNormalizeRejectsRestWithWorkDetails(t *testing.T) {
 	rows := WorkbookData{Rows: [][]string{
 		{"日期", "状态", "班次", "开始时间", "结束时间", "是否跨日", "备注"},
@@ -87,6 +90,7 @@ func TestNormalizeRejectsRestWithWorkDetails(t *testing.T) {
 	}
 }
 
+// TestNormalizeReturnsStructuredRestDayError 验证休息日错误保留行号、字段与底层领域错误
 func TestNormalizeReturnsStructuredRestDayError(t *testing.T) {
 	rows := WorkbookData{Rows: [][]string{
 		{"日期", "状态", "班次", "开始时间", "结束时间", "是否跨日", "备注"},
@@ -108,6 +112,7 @@ func TestNormalizeReturnsStructuredRestDayError(t *testing.T) {
 	}
 }
 
+// TestNormalizeReturnsStructuredScheduleError 验证排班规则失败转换为可定位的结构化错误
 func TestNormalizeReturnsStructuredScheduleError(t *testing.T) {
 	rows := WorkbookData{Rows: [][]string{
 		{"日期", "状态", "班次", "开始时间", "结束时间", "是否跨日", "备注"},
@@ -127,6 +132,7 @@ func TestNormalizeReturnsStructuredScheduleError(t *testing.T) {
 	}
 }
 
+// TestNormalizeMarksUnknownShiftUncertainAndRejectsImplicitCrossDay 验证未知班次标记待确认且跨日必须显式声明
 func TestNormalizeMarksUnknownShiftUncertainAndRejectsImplicitCrossDay(t *testing.T) {
 	unknown := WorkbookData{Rows: [][]string{
 		{"日期", "状态", "班次", "开始时间", "结束时间", "是否跨日", "备注"},
@@ -145,6 +151,7 @@ func TestNormalizeMarksUnknownShiftUncertainAndRejectsImplicitCrossDay(t *testin
 	}
 }
 
+// TestReadXLSXEnforcesLimitsAndHeaders 验证工作簿规模限制与固定表头检查
 func TestReadXLSXEnforcesLimitsAndHeaders(t *testing.T) {
 	file := excelize.NewFile()
 	if err := file.SetCellValue(file.GetSheetName(0), "A1", "错误表头"); err != nil {
@@ -164,4 +171,5 @@ func TestReadXLSXEnforcesLimitsAndHeaders(t *testing.T) {
 	}
 }
 
+// stringPtr 为测试中的可选字符串字段构造指针
 func stringPtr(value string) *string { return &value }

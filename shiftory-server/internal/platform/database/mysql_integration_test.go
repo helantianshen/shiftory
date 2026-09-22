@@ -10,6 +10,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
+// TestMigrateCreatesCompleteSchema 检查迁移幂等性、业务表及 uq_schedule_day 三列唯一索引断言
 func TestMigrateCreatesCompleteSchema(t *testing.T) {
 	dsn := os.Getenv("SHIFTORY_TEST_DATABASE_DSN")
 	if dsn == "" {
@@ -67,6 +68,7 @@ WHERE table_schema = DATABASE()
 	}
 }
 
+// ensureTestDatabase 仅允许创建 shiftory_test 数据库，拒绝对其他库执行初始化
 func ensureTestDatabase(t *testing.T, dsn string) {
 	t.Helper()
 	cfg, err := mysql.ParseDSN(dsn)

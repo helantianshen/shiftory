@@ -1,3 +1,4 @@
+# 通过真实 HTTP 请求验收主要流程，会在目标服务中创建测试用户和业务数据
 param(
     [string]$BaseUrl = "http://127.0.0.1:8080"
 )
@@ -9,6 +10,7 @@ $username = "accept$suffix"
 $email = "$username@example.com"
 $password = "correct horse battery staple"
 
+# Invoke-JsonApi 复用验收会话发送 JSON 请求，并按需携带访问令牌
 function Invoke-JsonApi {
     param(
         [string]$Method,

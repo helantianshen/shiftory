@@ -1,3 +1,4 @@
+# 检查后端仅包含 API 和迁移入口，以及 API 内置图片 Runner 的架构约束
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
@@ -38,11 +39,10 @@ if ($migrateSource -notmatch "database\.Migrate") {
 
 $excludedGit = "!.git/**"
 $excludedIDE = "!.idea/**"
-$excludedHandoff = "!.agent/HANDOFF.md"
-$excludedPlan = "!docs/superpowers/plans/2026-09-06-embedded-worker-cleanup.md"
+$excludedAgent = "!.agent/**"
 $excludedTest = "!scripts/tests/embedded-worker-architecture.Tests.ps1"
-# HANDOFF is an append-only progress record and intentionally names removed artifacts.
-$violations = @(& rg --hidden -n "cmd[/\\]worker|WithWorker|go\s+(run|build)\s+\.?[/\\]cmd[/\\]worker" --glob $excludedGit --glob $excludedIDE --glob $excludedHandoff --glob $excludedPlan --glob $excludedTest $repositoryRoot)
+# 项目文档和任务记录不属于可执行架构扫描范围
+$violations = @(& rg --hidden -n "cmd[/\\]worker|WithWorker|go\s+(run|build)\s+\.?[/\\]cmd[/\\]worker" --glob $excludedGit --glob $excludedIDE --glob $excludedAgent --glob $excludedTest $repositoryRoot)
 if ($LASTEXITCODE -notin @(0, 1)) {
     throw "Architecture residue scan failed with exit code $LASTEXITCODE"
 }

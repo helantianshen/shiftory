@@ -7,6 +7,7 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// TestOpenAPIDocumentIsValidYAMLAndCoversPublicRoutes 检查接口文档能解析为 YAML 且包含公开路由
 func TestOpenAPIDocumentIsValidYAMLAndCoversPublicRoutes(t *testing.T) {
 	content, err := os.ReadFile("openapi.yaml")
 	if err != nil {

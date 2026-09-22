@@ -1,8 +1,10 @@
+# 使用预设命令表检查 pnpm 解析优先级与后备参数
 $ErrorActionPreference = "Stop"
 
 $toolingScript = Join-Path $PSScriptRoot "..\dev-tooling.ps1"
 . $toolingScript
 
+# Assert-Equal 比较实际值与期望值，不匹配时报告检查失败
 function Assert-Equal {
     param(
         $Expected,
@@ -15,6 +17,7 @@ function Assert-Equal {
     }
 }
 
+# Assert-SequenceEqual 按顺序比较参数序列，避免参数丢失或顺序改变
 function Assert-SequenceEqual {
     param(
         [string[]]$Expected,
@@ -25,6 +28,7 @@ function Assert-SequenceEqual {
     Assert-Equal -Expected ($Expected -join "|") -Actual ($Actual -join "|") -Message $Message
 }
 
+# New-TestResolver 创建只查询给定命令表的闭包，使测试不依赖机器 PATH
 function New-TestResolver {
     param([hashtable]$Commands)
 

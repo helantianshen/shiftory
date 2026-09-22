@@ -13,6 +13,7 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
+// scheduleSegmentRequest 承载班次引用或自定义时间，展示快照由服务端补全
 type scheduleSegmentRequest struct {
 	Type      schedule.SegmentType `json:"type" binding:"required"`
 	ShiftID   *uint64              `json:"shiftId"`
@@ -21,6 +22,7 @@ type scheduleSegmentRequest struct {
 	CrossDay  bool                 `json:"crossDay"`
 }
 
+// scheduleRequest 承载日排班内容和客户端已知版本
 type scheduleRequest struct {
 	Status   schedule.Status          `json:"status" binding:"required"`
 	Note     string                   `json:"note"`
@@ -28,6 +30,7 @@ type scheduleRequest struct {
 	Segments []scheduleSegmentRequest `json:"segments"`
 }
 
+// upsertSchedule 检查编辑权限、构造领域排班并按客户端版本保存
 func (s *server) upsertSchedule(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -59,6 +62,7 @@ func (s *server) upsertSchedule(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_SCHEDULE", "排班信息不完整", nil)
 		return
 	}
+	// 把请求时间段转换为领域对象，引用班次使用服务端快照而非客户端展示值
 	segments := make([]schedule.Segment, 0, len(request.Segments))
 	for index, item := range request.Segments {
 		segment := schedule.Segment{Type: item.Type, ShiftID: item.ShiftID, CrossDay: item.CrossDay, SortOrder: index}
@@ -115,7 +119,10 @@ func (s *server) upsertSchedule(c *gin.Context) {
 
 var errVersionConflict = errors.New("schedule version conflict")
 
+// saveSchedule 锁定当前排班并校验版本，在事务中保存主体、时间段和修订
 func (s *server) saveSchedule(c *gin.Context, day schedule.Day) (schedule.Day, error) {
+	// 排班主体、时间段和版本快照必须在同一事务中写入
+	// 客户端版本与锁定版本不一致时整次操作按并发冲突拒绝
 	tx, err := s.db.BeginTx(c.Request.Context(), nil)
 	if err != nil {
 		return schedule.Day{}, err
@@ -126,6 +133,7 @@ func (s *server) saveSchedule(c *gin.Context, day schedule.Day) (schedule.Day, e
 	if err != nil {
 		return schedule.Day{}, err
 	}
+	// 创建要求客户端版本为零，更新要求与锁定版本一致并递增版本
 	if creating {
 		if day.Version != 0 {
 			return schedule.Day{}, errVersionConflict
@@ -152,6 +160,7 @@ WHERE id = ? AND version = ?`, day.Status, day.SourceType, day.Note, day.Version
 			return schedule.Day{}, err
 		}
 	}
+	// 时间段整体重写，保存与本次排班一致的班次名称、颜色和时间快照
 	for _, segment := range day.Segments {
 		var start, end any
 		if segment.StartTime != nil {
@@ -166,6 +175,7 @@ VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF
 			return schedule.Day{}, err
 		}
 	}
+	// 记录前后业务快照与版本，历史查询和安全撤销不依赖通用审计文本
 	after, _ := json.Marshal(storedFromDay(day))
 	changeType := "CREATE"
 	var beforeVersion, beforeSnapshot any
@@ -186,6 +196,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, day.ID, day.WorkspaceID, day.UserID, day
 	return day, nil
 }
 
+// loadShiftSnapshot 从工作区启用班次读取展示与时间信息并填入时间段
 func (s *server) loadShiftSnapshot(workspaceID, shiftID uint64, segment *schedule.Segment) error {
 	var start, end sql.NullString
 	err := s.db.QueryRow(`
@@ -203,12 +214,14 @@ FROM shifts WHERE id = ? AND workspace_id = ? AND enabled = TRUE`, shiftID, work
 	return nil
 }
 
+// userBelongsToWorkspace 检查目标用户是否为有效成员，查询失败时视为不属于工作区
 func (s *server) userBelongsToWorkspace(workspaceID, userID uint64) bool {
 	var count int
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ? AND status = 'ACTIVE'`, workspaceID, userID).Scan(&count)
 	return count == 1
 }
 
+// listSchedules 在当前工作区鉴权后查询目标用户指定日期范围的排班
 func (s *server) listSchedules(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -239,6 +252,7 @@ func (s *server) listSchedules(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// querySchedules 按用户与日期查询全局排班，workspaceID 仅填入返回上下文
 func (s *server) querySchedules(workspaceID uint64, userIDs []uint64, start, end schedule.Date) ([]schedule.Day, error) {
 	if len(userIDs) == 0 {
 		return []schedule.Day{}, nil
@@ -281,6 +295,7 @@ ORDER BY work_date, user_id`, args...)
 	return days, rows.Err()
 }
 
+// querySegments 按展示顺序读取排班时间段及保存的班次快照
 func (s *server) querySegments(dayID uint64) ([]schedule.Segment, error) {
 	rows, err := s.db.Query(`
 SELECT id, segment_type, shift_id, COALESCE(shift_name_snapshot, ''), COALESCE(shift_code_snapshot, ''),
@@ -314,6 +329,7 @@ FROM schedule_segments WHERE schedule_day_id = ? ORDER BY sort_order, id`, dayID
 	return segments, rows.Err()
 }
 
+// scheduleResponse 按排序字段组织时间段并生成排班接口响应，不修改输入切片
 func scheduleResponse(day schedule.Day) gin.H {
 	segments := make([]gin.H, 0, len(day.Segments))
 	ordered := append([]schedule.Segment(nil), day.Segments...)

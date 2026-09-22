@@ -15,20 +15,27 @@ import (
 
 type memoryStore struct{ content []byte }
 
+// Put 满足测试存储接口，写入操作不产生副作用
 func (s memoryStore) Put(context.Context, string, io.Reader) error { return nil }
+
+// Open 返回预设图片字节的独立读取器，由调用方关闭
 func (s memoryStore) Open(context.Context, string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(s.content)), nil
 }
+
+// Delete 满足测试存储接口，删除操作不产生副作用
 func (s memoryStore) Delete(context.Context, string) error { return nil }
 
 var _ storage.Store = memoryStore{}
 
 type fakeRecognizer struct{ draft imageai.Draft }
 
+// Recognize 返回预设草稿供图片处理测试使用，不调用外部模型
 func (r fakeRecognizer) Recognize(context.Context, imageai.Request) (imageai.Draft, error) {
 	return r.draft, nil
 }
 
+// TestImageProcessorCreatesReviewItemsWithoutWritingSchedules 验证图片处理补齐缺失日期并只生成预览、不写正式排班
 func TestImageProcessorCreatesReviewItemsWithoutWritingSchedules(t *testing.T) {
 	db := openWorkerTestDatabase(t)
 	seedWorkerJob(t, db, "PENDING", time.Now().UTC())

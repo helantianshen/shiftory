@@ -1,10 +1,13 @@
+// Package imageai 封装视觉模型调用、兼容字段归一化与排班草稿校验，不写入正式排班
 package imageai
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"shiftory-server/internal/schedule"
@@ -15,16 +18,19 @@ const (
 	SchemaVersion = "shiftory.image-schedule.v1"
 )
 
+// Period 表示模型返回草稿覆盖的日期区间
 type Period struct {
 	Start string `json:"start" jsonschema:"description=First represented date in YYYY-MM-DD"`
 	End   string `json:"end" jsonschema:"description=Last represented date in YYYY-MM-DD"`
 }
 
+// Issue 描述模型无法可靠识别的字段及原因
 type Issue struct {
 	Field   string `json:"field" jsonschema:"description=JSON field path that is uncertain"`
 	Message string `json:"message" jsonschema:"description=Short reason for uncertainty"`
 }
 
+// Segment 表示模型识别的班次标签或时间段，尚未映射为工作区班次快照
 type Segment struct {
 	Type            string `json:"type" jsonschema:"enum=SHIFT,enum=TIME_RANGE"`
 	OriginalLabel   string `json:"originalLabel"`
@@ -34,6 +40,7 @@ type Segment struct {
 	CrossDay        bool   `json:"crossDay"`
 }
 
+// Entry 表示模型识别的单日状态、时间段及字段级不确定信息
 type Entry struct {
 	Date      string    `json:"date" jsonschema:"description=Canonical YYYY-MM-DD"`
 	Status    string    `json:"status" jsonschema:"enum=WORKING,enum=REST"`
@@ -43,16 +50,29 @@ type Entry struct {
 	Issues    []Issue   `json:"issues"`
 }
 
+// Draft 承载模型结构化草稿，仍需业务校验与人工确认
 type Draft struct {
 	Period  Period  `json:"period"`
 	Entries []Entry `json:"entries"`
+	Issues  []Issue `json:"issues,omitempty"`
 }
 
+// DecodeDraft 归一化已知模型输出别名后严格解码，并校验请求日期范围
 func DecodeDraft(reader io.Reader, requestedStart, requestedEnd schedule.Date) (Draft, error) {
+	// 先归一化已知网关别名，再以严格 Schema 拒绝未知字段和越界业务数据
 	decoder := json.NewDecoder(io.LimitReader(reader, 2<<20))
-	decoder.DisallowUnknownFields()
+	var payload json.RawMessage
+	if err := decoder.Decode(&payload); err != nil {
+		return Draft{}, fmt.Errorf("decode image schedule draft: %w", err)
+	}
+	normalized, err := normalizeProviderPayload(payload)
+	if err != nil {
+		return Draft{}, fmt.Errorf("decode image schedule draft: %w", err)
+	}
+	strictDecoder := json.NewDecoder(bytes.NewReader(normalized))
+	strictDecoder.DisallowUnknownFields()
 	var draft Draft
-	if err := decoder.Decode(&draft); err != nil {
+	if err := strictDecoder.Decode(&draft); err != nil {
 		return Draft{}, fmt.Errorf("decode image schedule draft: %w", err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
@@ -64,6 +84,134 @@ func DecodeDraft(reader io.Reader, requestedStart, requestedEnd schedule.Date) (
 	return draft, nil
 }
 
+// normalizeProviderPayload 归一化已知字段和枚举别名，保留未知字段供严格解码拒绝
+func normalizeProviderPayload(payload json.RawMessage) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil, err
+	}
+	if period, ok := fields["period"]; ok {
+		var periodFields map[string]json.RawMessage
+		if json.Unmarshal(period, &periodFields) == nil {
+			for bad, good := range map[string]string{"、start": "start", "] start": "start", "[start": "start", "、end": "end", "] end": "end", "[end": "end"} {
+				if value, exists := periodFields[bad]; exists {
+					periodFields[good] = value
+					delete(periodFields, bad)
+				}
+			}
+			if normalized, marshalErr := json.Marshal(periodFields); marshalErr == nil {
+				fields["period"] = normalized
+			}
+		}
+	}
+	// 同义字段同时出现时拒绝选择，防止两份排班数据相互覆盖
+	_, hasEntries := fields["entries"]
+	schedules, hasSchedules := fields["schedules"]
+	if hasEntries && hasSchedules {
+		return nil, errors.New("image schedule draft contains both entries and schedules")
+	}
+	if !hasEntries && hasSchedules {
+		fields["entries"] = schedules
+		delete(fields, "schedules")
+	}
+	if entries, ok := fields["entries"]; ok {
+		var rawEntries []json.RawMessage
+		if err := json.Unmarshal(entries, &rawEntries); err != nil {
+			return nil, err
+		}
+		for index, rawEntry := range rawEntries {
+			var entryFields map[string]json.RawMessage
+			if err := json.Unmarshal(rawEntry, &entryFields); err != nil {
+				return nil, fmt.Errorf("invalid schedule entry %d: %w", index, err)
+			}
+			// 部分兼容网关会在 JSON 键名前混入标点，严格解析前仅修正常见别名
+			for bad, good := range map[string]string{"、start": "start", "] start": "start", "[start": "start", "、end": "end", "] end": "end", "[end": "end"} {
+				if value, ok := entryFields[bad]; ok {
+					entryFields[good] = value
+					delete(entryFields, bad)
+				}
+			}
+			_, hasSegments := entryFields["segments"]
+			shifts, hasShifts := entryFields["shifts"]
+			if hasSegments && hasShifts {
+				return nil, fmt.Errorf("schedule entry %d contains both segments and shifts", index)
+			}
+			if !hasSegments && hasShifts {
+				entryFields["segments"] = shifts
+				delete(entryFields, "shifts")
+			}
+			// 兼容网关可能改变枚举大小写或用 custom 表示自由时间段，严格解析前需归一化这些别名
+			if status, ok := entryFields["status"]; ok {
+				var value string
+				if json.Unmarshal(status, &value) == nil {
+					value = strings.ToUpper(strings.TrimSpace(value))
+					if value == "WORK" {
+						value = "WORKING"
+					}
+					if value == "OFF" {
+						value = "REST"
+					}
+					entryFields["status"] = json.RawMessage(strconv.Quote(value))
+				}
+			}
+			if segments, ok := entryFields["segments"]; ok {
+				var rawSegments []json.RawMessage
+				if err := json.Unmarshal(segments, &rawSegments); err != nil {
+					return nil, err
+				}
+				for i, rawSegment := range rawSegments {
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(rawSegment, &fields); err != nil {
+						return nil, err
+					}
+					if typ, ok := fields["type"]; ok {
+						var value string
+						if json.Unmarshal(typ, &value) == nil {
+							value = strings.ToUpper(strings.TrimSpace(value))
+							if value == "CUSTOM" || value == "TIME" || value == "RANGE" {
+								value = "TIME_RANGE"
+							}
+							fields["type"] = json.RawMessage(strconv.Quote(value))
+						}
+					}
+					// 模型的 24:00 表达转换为午夜并显式标记跨日，供领域时间校验处理
+					for _, key := range []string{"startTime", "endTime"} {
+						if value, ok := fields[key]; ok {
+							var clock string
+							if json.Unmarshal(value, &clock) == nil && strings.TrimSpace(clock) == "24:00" {
+								fields[key] = json.RawMessage(`"00:00"`)
+								fields["crossDay"] = json.RawMessage(`true`)
+							}
+						}
+					}
+					normalized, err := json.Marshal(fields)
+					if err != nil {
+						return nil, err
+					}
+					rawSegments[i] = normalized
+				}
+				normalized, err := json.Marshal(rawSegments)
+				if err != nil {
+					return nil, err
+				}
+				entryFields["segments"] = normalized
+			}
+			normalizedEntry, err := json.Marshal(entryFields)
+			if err != nil {
+				return nil, err
+			}
+			rawEntries[index] = normalizedEntry
+		}
+		normalizedEntries, err := json.Marshal(rawEntries)
+		if err != nil {
+			return nil, err
+		}
+		fields["entries"] = normalizedEntries
+	}
+	return json.Marshal(fields)
+}
+
+// ensureJSONEOF 确保 JSON 值后只有空白，拒绝额外值或非法尾部内容
 func ensureJSONEOF(decoder *json.Decoder) error {
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
@@ -75,6 +223,7 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
+// Validate 校验识别周期、日期唯一性、状态与逐段规则，不执行班次映射
 func (d Draft) Validate(requestedStart, requestedEnd schedule.Date) error {
 	periodStart, startErr := schedule.ParseDate(d.Period.Start)
 	periodEnd, endErr := schedule.ParseDate(d.Period.End)
@@ -84,6 +233,7 @@ func (d Draft) Validate(requestedStart, requestedEnd schedule.Date) error {
 	if periodStart.String() < requestedStart.String() || periodEnd.String() > requestedEnd.String() {
 		return errors.New("image schedule period exceeds requested range")
 	}
+	// 逐日检查请求边界与重复日期，不确定条目必须携带可展示的问题说明
 	seen := make(map[schedule.Date]bool, len(d.Entries))
 	for index, entry := range d.Entries {
 		date, err := schedule.ParseDate(entry.Date)
@@ -112,6 +262,7 @@ func (d Draft) Validate(requestedStart, requestedEnd schedule.Date) error {
 	return nil
 }
 
+// validateSegment 校验模型时间段的可识别标签、完整时间及跨日语义
 func validateSegment(segment Segment) error {
 	switch segment.Type {
 	case string(schedule.SegmentShift):

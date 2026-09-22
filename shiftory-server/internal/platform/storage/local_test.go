@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestLocalStoreRoundTripAndRejectsTraversal 验证文件写读删除及路径穿越拒绝行为
 func TestLocalStoreRoundTripAndRejectsTraversal(t *testing.T) {
 	store, err := NewLocal(t.TempDir())
 	if err != nil {

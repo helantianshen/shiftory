@@ -1,3 +1,4 @@
+// Package httpserver 适配 HTTP 请求、认证授权和业务接口，统一响应与审计信息
 package httpserver
 
 import (
@@ -26,6 +27,7 @@ const userIDKey = "authenticatedUserID"
 const requestIDKey = "requestID"
 const errorCodeKey = "errorCode"
 
+// Dependencies 提供 HTTP 层依赖，连接池和外部任务生命周期由调用方管理
 type Dependencies struct {
 	DB           *sql.DB
 	Config       config.Config
@@ -35,6 +37,7 @@ type Dependencies struct {
 	Logger       *slog.Logger
 }
 
+// server 聚合 HTTP 处理所需的服务与适配器
 type server struct {
 	db           *sql.DB
 	config       config.Config
@@ -45,6 +48,7 @@ type server struct {
 	logger       *slog.Logger
 }
 
+// New 组装认证、业务路由与静态页面处理器，不启动网络监听
 func New(deps Dependencies) (http.Handler, error) {
 	if deps.DB == nil || deps.Tokens == nil {
 		return nil, errors.New("database and token manager are required")
@@ -66,6 +70,7 @@ func New(deps Dependencies) (http.Handler, error) {
 		authService: auth.NewService(auth.NewMySQLRepository(deps.DB), auth.NewPasswordHasher(auth.DefaultPasswordParams()), deps.Tokens),
 		store:       store, importWakeup: deps.ImportWakeup, logger: logger,
 	}
+	// 全局中间件先负责恢复、请求跟踪和跨域，业务路由再按认证要求分组
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	_ = router.SetTrustedProxies(nil)
@@ -82,6 +87,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	authRoutes.PATCH("/profile", s.authenticate(), s.updateProfile)
 	authRoutes.PUT("/password", s.authenticate(), s.changePassword)
 
+	// 这些业务入口统一验证账号，工作区角色仍在每个处理函数中重新查询
 	protected := v1.Group("")
 	protected.Use(s.authenticate())
 	protected.POST("/invitations/accept", s.acceptInvitation)
@@ -123,12 +129,14 @@ func New(deps Dependencies) (http.Handler, error) {
 	return router, nil
 }
 
+// requestContext 生成请求标识、限制请求体大小并记录请求完成日志
 func (s *server) requestContext() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := uuid.NewString()
 		c.Set(requestIDKey, requestID)
 		c.Header("X-Request-ID", requestID)
 		started := time.Now()
+		// 普通 JSON 请求限制为 1 MiB，文件上传预留协议开销后限制为 12 MiB
 		if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 		} else {
@@ -149,6 +157,7 @@ func (s *server) requestContext() gin.HandlerFunc {
 	}
 }
 
+// configureSPA 在构建入口存在时提供静态文件与页面路由回退，API 未命中仍返回错误
 func (s *server) configureSPA(router *gin.Engine) {
 	index := filepath.Join(s.config.WebDir, "index.html")
 	if _, err := os.Stat(index); err != nil {
@@ -169,6 +178,7 @@ func (s *server) configureSPA(router *gin.Engine) {
 	})
 }
 
+// cors 仅为配置来源设置凭据跨域响应头，并结束 OPTIONS 预检请求
 func (s *server) cors() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
@@ -188,6 +198,7 @@ func (s *server) cors() gin.HandlerFunc {
 	}
 }
 
+// authenticate 验证访问令牌后查询当前账号状态，将用户 ID 写入请求上下文
 func (s *server) authenticate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
@@ -202,6 +213,7 @@ func (s *server) authenticate() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		// 令牌有效不代表账号仍可用，每次请求都从数据库核对当前账号状态
 		user, err := s.authService.CurrentUser(c.Request.Context(), claims.UserID)
 		if err != nil {
 			failure(c, http.StatusUnauthorized, "USER_UNAVAILABLE", "账号不可用", nil)
@@ -213,6 +225,7 @@ func (s *server) authenticate() gin.HandlerFunc {
 	}
 }
 
+// registerRequest 定义注册接口的必填 JSON 字段
 type registerRequest struct {
 	Username    string `json:"username" binding:"required"`
 	Email       string `json:"email" binding:"required"`
@@ -220,6 +233,7 @@ type registerRequest struct {
 	Password    string `json:"password" binding:"required"`
 }
 
+// register 接收注册资料并返回公开用户信息，账号冲突返回 HTTP 409
 func (s *server) register(c *gin.Context) {
 	var request registerRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -240,11 +254,13 @@ func (s *server) register(c *gin.Context) {
 	success(c, http.StatusCreated, userResponse(user))
 }
 
+// loginRequest 定义登录接口的账号标识和密码字段
 type loginRequest struct {
 	Login    string `json:"login" binding:"required"`
 	Password string `json:"password" binding:"required"`
 }
 
+// login 验证凭据并交付访问令牌、刷新 Cookie 与 CSRF Cookie
 func (s *server) login(c *gin.Context) {
 	var request loginRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -266,6 +282,7 @@ func (s *server) login(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"accessToken": pair.AccessToken, "accessExpiresAt": pair.AccessExpiry, "user": userResponse(user)})
 }
 
+// refresh 通过来源和 CSRF 校验后轮换刷新 Cookie，拒绝时清除刷新 Cookie
 func (s *server) refresh(c *gin.Context) {
 	if !s.validOrigin(c) {
 		failure(c, http.StatusForbidden, "INVALID_ORIGIN", "请求来源不受信任", nil)
@@ -294,6 +311,7 @@ func (s *server) refresh(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"accessToken": pair.AccessToken, "accessExpiresAt": pair.AccessExpiry})
 }
 
+// logout 尝试撤销刷新令牌族并清除会话 Cookie
 func (s *server) logout(c *gin.Context) {
 	if !s.validOrigin(c) {
 		failure(c, http.StatusForbidden, "INVALID_ORIGIN", "请求来源不受信任", nil)
@@ -313,6 +331,7 @@ func (s *server) logout(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"loggedOut": true})
 }
 
+// me 读取当前有效用户的公开资料
 func (s *server) me(c *gin.Context) {
 	user, err := s.authService.CurrentUser(c.Request.Context(), currentUserID(c))
 	if err != nil {
@@ -322,6 +341,7 @@ func (s *server) me(c *gin.Context) {
 	success(c, http.StatusOK, userResponse(user))
 }
 
+// updateProfile 接收展示名与头像地址并交由认证服务校验保存
 func (s *server) updateProfile(c *gin.Context) {
 	var request struct {
 		DisplayName string `json:"displayName" binding:"required"`
@@ -339,6 +359,7 @@ func (s *server) updateProfile(c *gin.Context) {
 	success(c, http.StatusOK, userResponse(user))
 }
 
+// changePassword 验证并更新密码，成功后清除 Cookie 并记录安全审计
 func (s *server) changePassword(c *gin.Context) {
 	var request struct {
 		CurrentPassword string `json:"currentPassword" binding:"required"`
@@ -358,6 +379,7 @@ func (s *server) changePassword(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"changed": true})
 }
 
+// nullableActor 将未知用户的零 ID 映射为可空审计操作者
 func nullableActor(userID uint64) any {
 	if userID == 0 {
 		return nil
@@ -365,6 +387,7 @@ func nullableActor(userID uint64) any {
 	return userID
 }
 
+// recordSecurityAudit 尽力写入不属于工作区的安全事件，写入失败不改变 HTTP 响应
 func (s *server) recordSecurityAudit(c *gin.Context, actorID any, action, targetType string, targetID any, details any) {
 	payload, _ := json.Marshal(details)
 	requestID, _ := c.Get(requestIDKey)
@@ -377,18 +400,21 @@ INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target
 VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)`, actorID, action, targetType, targetID, requestID, c.ClientIP(), userAgent, payload)
 }
 
+// setRefreshCookie 设置仅认证路径可用的 HttpOnly Cookie，HTTPS 来源启用 Secure
 func (s *server) setRefreshCookie(c *gin.Context, token string, expiry time.Time) {
 	secure := strings.HasPrefix(s.config.PublicOrigin, "https://")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("shiftory_refresh", token, int(time.Until(expiry).Seconds()), "/api/v1/auth", "", secure, true)
 }
 
+// clearRefreshCookie 使用相同路径和安全属性使刷新 Cookie 立即过期
 func (s *server) clearRefreshCookie(c *gin.Context) {
 	secure := strings.HasPrefix(s.config.PublicOrigin, "https://")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("shiftory_refresh", "", -1, "/api/v1/auth", "", secure, true)
 }
 
+// setCSRFCookie 创建前端可读的随机 CSRF Cookie，用于后续双提交校验
 func (s *server) setCSRFCookie(c *gin.Context) error {
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
@@ -400,39 +426,48 @@ func (s *server) setCSRFCookie(c *gin.Context) error {
 	return nil
 }
 
+// clearCSRFCookie 使站点根路径的 CSRF Cookie 立即过期
 func (s *server) clearCSRFCookie(c *gin.Context) {
 	secure := strings.HasPrefix(s.config.PublicOrigin, "https://")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("shiftory_csrf", "", -1, "/", "", secure, false)
 }
 
+// validCSRF 以常量时间比较非空 Cookie 和 X-CSRF-Token 请求头
 func (s *server) validCSRF(c *gin.Context) bool {
 	cookie, err := c.Cookie("shiftory_csrf")
 	header := c.GetHeader("X-CSRF-Token")
 	return err == nil && cookie != "" && header != "" && subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) == 1
 }
 
+// validOrigin 接受空 Origin 或与配置公开来源完全一致的 Origin
 func (s *server) validOrigin(c *gin.Context) bool {
 	origin := c.GetHeader("Origin")
+	// 非浏览器客户端通常不发送 Origin，浏览器请求则必须精确匹配公开来源
 	return origin == "" || origin == s.config.PublicOrigin
 }
 
+// clientInfo 提取客户端 IP 和 User-Agent 作为会话记录信息
 func clientInfo(c *gin.Context) auth.ClientInfo {
 	return auth.ClientInfo{IPAddress: c.ClientIP(), UserAgent: c.GetHeader("User-Agent")}
 }
 
+// currentUserID 从鉴权上下文读取用户 ID，缺失或类型不符时返回零
 func currentUserID(c *gin.Context) uint64 {
 	value, _ := c.Get(userIDKey)
 	id, _ := value.(uint64)
 	return id
 }
 
+// userResponse 只序列化公开账号字段，排除密码摘要等认证数据
 func userResponse(user auth.User) gin.H {
 	return gin.H{"id": user.ID, "username": user.Username, "email": user.Email, "displayName": user.DisplayName, "avatarUrl": user.AvatarURL, "status": user.Status}
 }
 
+// success 按统一 data 外层格式写入成功响应
 func success(c *gin.Context, status int, data any) { c.JSON(status, gin.H{"data": data}) }
 
+// failure 记录业务错误码并返回包含请求标识的统一错误响应
 func failure(c *gin.Context, status int, code, message string, details any) {
 	c.Set(errorCodeKey, code)
 	requestID, _ := c.Get(requestIDKey)

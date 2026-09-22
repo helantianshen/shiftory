@@ -11,6 +11,7 @@ import (
 
 var expectedHeaders = []string{"日期", "状态", "班次", "开始时间", "结束时间", "是否跨日", "备注"}
 
+// ShiftMapping 提供工作区班次及其时间、颜色快照用于表格别名映射
 type ShiftMapping struct {
 	ID           uint64
 	Name         string
@@ -21,6 +22,7 @@ type ShiftMapping struct {
 	DisplayColor string
 }
 
+// Entry 保存规范化后的逐日草稿及需要人工确认的问题
 type Entry struct {
 	Date      schedule.Date
 	Row       int
@@ -31,7 +33,9 @@ type Entry struct {
 	Issues    []string
 }
 
+// Normalize 校验固定表头并合并同日行，无法映射的班次保留为不确定项
 func Normalize(workbook WorkbookData, mappings map[string]ShiftMapping) ([]Entry, error) {
+	// 固定列顺序是解析前提，表头不匹配时不尝试推断任意表格结构
 	if len(workbook.Rows) < 2 {
 		return nil, ErrInvalidTemplate
 	}
@@ -40,10 +44,12 @@ func Normalize(workbook WorkbookData, mappings map[string]ShiftMapping) ([]Entry
 			return nil, fmt.Errorf("%w: column %d must be %q", ErrInvalidTemplate, index+1, expected)
 		}
 	}
+	// 别名按去空白与小写统一索引，避免表格大小写影响班次匹配
 	normalizedMappings := make(map[string]ShiftMapping, len(mappings))
 	for alias, mapping := range mappings {
 		normalizedMappings[strings.ToLower(strings.TrimSpace(alias))] = mapping
 	}
+	// 同一日期可由多行组成多个时间段，但状态和非空备注必须一致
 	entries := make(map[schedule.Date]*Entry)
 	for index, row := range workbook.Rows[1:] {
 		if emptyRow(row) {
@@ -70,6 +76,7 @@ func Normalize(workbook WorkbookData, mappings map[string]ShiftMapping) ([]Entry
 		if err != nil {
 			return nil, rowValidationError(index+2, []string{"是否跨日"}, "INVALID_CROSS_DAY", "是否跨日的值无效", "请选择“是”或“否”", err)
 		}
+		// 休息与工作详情互斥，工作行则在班次引用和自定义时间之间二选一
 		if status == schedule.StatusRest {
 			if shiftLabel != "" || startText != "" || endText != "" || crossDay {
 				return nil, rowValidationError(index+2, []string{"状态", "班次", "开始时间", "结束时间", "是否跨日"}, "REST_HAS_SEGMENTS", "休息日不能填写班次、开始时间、结束时间或跨日", "请清空班次、开始时间和结束时间，并将是否跨日设为“否”", schedule.ErrRestHasSegments)
@@ -109,6 +116,7 @@ func Normalize(workbook WorkbookData, mappings map[string]ShiftMapping) ([]Entry
 			return nil, rowValidationError(index+2, []string{"班次", "开始时间", "结束时间", "是否跨日"}, "CROSS_DAY_WITHOUT_SEGMENT", "跨日必须关联班次或完整时间段", "请填写班次，或同时填写开始时间和结束时间", nil)
 		}
 	}
+	// 合并行后再校验全天时间段，检测跨行重叠并按日期稳定输出预览
 	result := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		day := schedule.Day{WorkDate: entry.Date, Status: entry.Status, Segments: entry.Segments}
@@ -122,6 +130,7 @@ func Normalize(workbook WorkbookData, mappings map[string]ShiftMapping) ([]Entry
 	return result, nil
 }
 
+// emptyRow 判断一行是否只含空白单元格
 func emptyRow(row []string) bool {
 	for _, value := range row {
 		if strings.TrimSpace(value) != "" {
@@ -131,6 +140,7 @@ func emptyRow(row []string) bool {
 	return true
 }
 
+// parseDateCell 接受横线、斜线或点分隔的日期并统一为领域日期
 func parseDateCell(value string) (schedule.Date, error) {
 	if date, err := schedule.ParseDate(value); err == nil {
 		return date, nil
@@ -143,6 +153,7 @@ func parseDateCell(value string) (schedule.Date, error) {
 	return "", schedule.ErrInvalidDate
 }
 
+// parseStatus 将中文或英文工作、休息值映射为正式排班状态
 func parseStatus(value string) (schedule.Status, error) {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case "工作", "WORKING":
@@ -154,6 +165,7 @@ func parseStatus(value string) (schedule.Status, error) {
 	}
 }
 
+// parseBoolean 解析表格跨日标记，空单元格按不跨日处理
 func parseBoolean(value string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "否", "false", "0", "no":

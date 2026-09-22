@@ -1,11 +1,14 @@
+// Package calendar 按选定成员的正式日排班计算工作、休息、缺失与全部休息状态
 package calendar
 
 import "shiftory-server/internal/schedule"
 
+// MemberStatus 表示日历成员状态，允许正式状态之外的缺失标记
 type MemberStatus string
 
 const MemberMissing MemberStatus = "MISSING"
 
+// MemberDetail 保存日历中单个成员的已确认排班详情
 type MemberDetail struct {
 	UserID         uint64
 	Status         MemberStatus
@@ -16,6 +19,7 @@ type MemberDetail struct {
 	Segments       []schedule.Segment
 }
 
+// DaySummary 保存选定成员集合在某日的统计与成员明细
 type DaySummary struct {
 	Date    schedule.Date
 	Working int
@@ -25,7 +29,10 @@ type DaySummary struct {
 	Members []MemberDetail
 }
 
+// Aggregate 按指定成员集合汇总日期，跨日排班仍只归属其开始日期
+// AllRest 仅在集合非空且每名成员均明确休息时成立，缺失排班不视为休息
 func Aggregate(dates []schedule.Date, memberIDs []uint64, days []schedule.Day) []DaySummary {
+	// 以排班开始日期和用户建立索引，跨日时间段不会产生次日副本
 	byDateAndMember := make(map[schedule.Date]map[uint64]schedule.Day, len(dates))
 	for _, day := range days {
 		members := byDateAndMember[day.WorkDate]
@@ -36,6 +43,7 @@ func Aggregate(dates []schedule.Date, memberIDs []uint64, days []schedule.Day) [
 		members[day.UserID] = day
 	}
 
+	// 按传入日期与成员顺序输出详情，没有正式记录的成员计入缺失
 	result := make([]DaySummary, 0, len(dates))
 	for _, date := range dates {
 		summary := DaySummary{Date: date, Members: make([]MemberDetail, 0, len(memberIDs))}

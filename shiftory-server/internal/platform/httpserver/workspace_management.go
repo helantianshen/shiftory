@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// listMyInvitations 按当前用户邮箱列出尚未过期的待接受邀请
 func (s *server) listMyInvitations(c *gin.Context) {
 	rows, err := s.db.QueryContext(c.Request.Context(), `SELECT i.id, i.workspace_id, w.name, i.role, i.expires_at FROM workspace_invitations i JOIN users u ON u.email_normalized = i.email_normalized JOIN workspaces w ON w.id = i.workspace_id WHERE u.id = ? AND i.status = 'PENDING' AND i.expires_at > UTC_TIMESTAMP(6) ORDER BY i.created_at DESC`, currentUserID(c))
 	if err != nil {
@@ -30,6 +31,7 @@ func (s *server) listMyInvitations(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// listInvitations 向管理员返回工作区邀请列表，并尝试标记已过期邀请
 func (s *server) listInvitations(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -76,6 +78,7 @@ WHERE i.workspace_id = ? ORDER BY i.created_at DESC`, workspaceID)
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// revokeInvitation 仅允许管理员撤销仍待处理的工作区邀请
 func (s *server) revokeInvitation(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -105,6 +108,7 @@ func (s *server) revokeInvitation(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"id": invitationID, "status": "REVOKED"})
 }
 
+// transferWorkspace 校验所有者身份后在事务中切换所有权及双方成员角色
 func (s *server) transferWorkspace(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -124,6 +128,7 @@ func (s *server) transferWorkspace(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_NEW_OWNER", "新所有者无效", nil)
 		return
 	}
+	// 锁定接任者的成员状态，角色切换与工作区所有者字段在同一事务提交
 	tx, err := s.db.BeginTx(c.Request.Context(), nil)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法转让工作区", nil)
@@ -155,6 +160,7 @@ func (s *server) transferWorkspace(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"id": workspaceID, "ownerUserId": request.NewOwnerUserID})
 }
 
+// deleteWorkspace 核对所有者和确认名称后删除关联数据，再尽力清理上传文件
 func (s *server) deleteWorkspace(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -179,6 +185,7 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "CONFIRMATION_MISMATCH", "请输入完整工作区名称以确认解散", nil)
 		return
 	}
+	// 删除数据库索引前收集存储键，文件系统清理需要在提交后单独执行
 	fileRows, err := s.db.QueryContext(c.Request.Context(), `SELECT f.storage_key FROM import_files f JOIN import_jobs j ON j.id = f.import_job_id WHERE j.workspace_id = ?`, workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取工作区文件", nil)
@@ -201,6 +208,7 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
+	// 按依赖顺序删除关联记录并清理当前工作区偏好，任一失败回滚数据库事务
 	deletions := []string{
 		"DELETE FROM schedule_revisions WHERE workspace_id = ?",
 		"DELETE ss FROM schedule_segments ss JOIN schedule_days sd ON sd.id = ss.schedule_day_id WHERE sd.workspace_id = ?",
@@ -229,6 +237,7 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法提交工作区删除", nil)
 		return
 	}
+	// 数据库已提交后尽力删除原文件，删除错误不会恢复数据库或阻止响应
 	for _, key := range storageKeys {
 		_ = s.store.Delete(c.Request.Context(), key)
 	}

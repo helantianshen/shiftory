@@ -12,6 +12,7 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
+// getCalendar 校验日期与成员选择，按成员可见日期聚合团队排班
 func (s *server) getCalendar(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -41,6 +42,7 @@ func (s *server) getCalendar(c *gin.Context) {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询成员有效期", nil)
 		return
 	}
+	// 未指定成员时按关系与查询区间的交集选择成员，显式选择只校验工作区归属
 	if len(memberIDs) == 0 {
 		for _, period := range periods {
 			if period.overlaps(start, end) {
@@ -71,6 +73,7 @@ func (s *server) getCalendar(c *gin.Context) {
 	for _, period := range periods {
 		periodByMember[period.UserID] = period
 	}
+	// 每天按成员离开日期筛选实际参与统计的人数，缺失值由聚合器单独计算
 	summaries := make([]calendarservice.DaySummary, 0, len(dates))
 	for _, date := range dates {
 		effectiveMembers := make([]uint64, 0, len(memberIDs))
@@ -96,22 +99,25 @@ func (s *server) getCalendar(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"days": response, "memberIds": memberIDs})
 }
 
+// memberPeriod 保存工作区时区下的加入日期和可选离开日期
 type memberPeriod struct {
 	UserID uint64
 	Joined schedule.Date
 	Left   *schedule.Date
 }
 
+// contains 判断成员在该日期是否纳入统计，未离开成员覆盖全部日期
 func (p memberPeriod) contains(date schedule.Date) bool {
-	// Personal schedules are global; current team members are evaluated for all
-	// calendar dates. A left date remains an upper boundary for historical members.
+	// 个人排班全局生效，当前成员覆盖全部查询日期，历史成员仍以离开日期为上界
 	return p.Left == nil || p.Left.String() >= date.String()
 }
 
+// overlaps 判断成员关系与查询区间是否相交，首尾日期包含在内
 func (p memberPeriod) overlaps(start, end schedule.Date) bool {
 	return p.Joined.String() <= end.String() && (p.Left == nil || p.Left.String() >= start.String())
 }
 
+// memberPeriods 将成员加入和离开时间转换为工作区时区下的日期
 func (s *server) memberPeriods(workspaceID uint64) ([]memberPeriod, error) {
 	var timezone string
 	if err := s.db.QueryRow(`SELECT timezone FROM workspaces WHERE id = ?`, workspaceID).Scan(&timezone); err != nil {
@@ -144,6 +150,7 @@ func (s *server) memberPeriods(workspaceID uint64) ([]memberPeriod, error) {
 	return periods, rows.Err()
 }
 
+// segmentResponses 将时间段与可选班次快照转换为日历详情字段
 func segmentResponses(segments []schedule.Segment) []gin.H {
 	result := make([]gin.H, 0, len(segments))
 	for _, segment := range segments {
@@ -163,6 +170,7 @@ func segmentResponses(segments []schedule.Segment) []gin.H {
 	return result
 }
 
+// parseMemberIDs 解析逗号分隔的非零成员 ID 并拒绝非法值
 func parseMemberIDs(value string) ([]uint64, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
@@ -184,10 +192,13 @@ func parseMemberIDs(value string) ([]uint64, error) {
 
 var errInvalidMemberID = &memberIDError{}
 
+// memberIDError 表示请求中的成员 ID 无法解析
 type memberIDError struct{}
 
+// Error 返回成员 ID 格式错误说明
 func (*memberIDError) Error() string { return "invalid member id" }
 
+// dateRange 生成包含首尾的连续日期列表，并限制最多天数
 func dateRange(start, end schedule.Date, limit int) ([]schedule.Date, error) {
 	startTime, _ := time.Parse("2006-01-02", start.String())
 	endTime, _ := time.Parse("2006-01-02", end.String())
@@ -205,10 +216,13 @@ func dateRange(start, end schedule.Date, limit int) ([]schedule.Date, error) {
 	return result, nil
 }
 
+// dateRangeError 保存可返回客户端的日期范围错误说明
 type dateRangeError struct{ message string }
 
+// Error 返回日期区间校验失败原因
 func (e *dateRangeError) Error() string { return e.message }
 
+// activeMemberIDs 查询工作区全部有效成员 ID，按 ID 排序
 func (s *server) activeMemberIDs(workspaceID uint64) ([]uint64, error) {
 	rows, err := s.db.Query(`SELECT user_id FROM workspace_members WHERE workspace_id = ? AND status = 'ACTIVE' ORDER BY user_id`, workspaceID)
 	if err != nil {

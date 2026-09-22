@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// TestTokenManagerIssuesAndParsesTypedTokens 验证访问与刷新令牌的签发、解析及类型隔离
 func TestTokenManagerIssuesAndParsesTypedTokens(t *testing.T) {
 	manager := testTokenManager(t)
 	pair, err := manager.IssuePair(42, "family-1", time.Now().UTC())
@@ -32,6 +33,7 @@ func TestTokenManagerIssuesAndParsesTypedTokens(t *testing.T) {
 	}
 }
 
+// TestTokenManagerRejectsWrongIssuerAndSignature 验证错误签发方和签名不能通过令牌校验
 func TestTokenManagerRejectsWrongIssuerAndSignature(t *testing.T) {
 	manager := testTokenManager(t)
 	pair, err := manager.IssuePair(42, "family-1", time.Now().UTC())
@@ -54,6 +56,7 @@ func TestTokenManagerRejectsWrongIssuerAndSignature(t *testing.T) {
 	}
 }
 
+// testTokenManager 使用临时 Ed25519 密钥创建测试令牌管理器
 func testTokenManager(t *testing.T) *TokenManager {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

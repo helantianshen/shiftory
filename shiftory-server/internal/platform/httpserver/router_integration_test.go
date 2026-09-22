@@ -23,6 +23,7 @@ import (
 	"shiftory-server/internal/platform/database"
 )
 
+// TestCoreAPIWorkflow 覆盖注册登录、工作区、班次、排班和日历的 API 主流程
 func TestCoreAPIWorkflow(t *testing.T) {
 	db := openCleanTestDatabase(t)
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -53,8 +54,7 @@ func TestCoreAPIWorkflow(t *testing.T) {
 	inviteToken := jsonString(t, invitation, "data", "token")
 	apiRequest(t, router, http.MethodPost, "/api/v1/invitations/accept", bob.AccessToken, map[string]any{"token": inviteToken})
 
-	// Keep the fixture's membership interval stable: the schedule dates below
-	// are intentionally fixed and must fall after both members joined.
+	// 测试使用固定排班日期，成员加入时间必须早于这些日期
 	if _, err := db.Exec(`UPDATE workspace_members SET joined_at = '2026-09-01 00:00:00' WHERE workspace_id = ?`, workspaceID); err != nil {
 		t.Fatalf("set deterministic membership start: %v", err)
 	}
@@ -105,6 +105,7 @@ func TestCoreAPIWorkflow(t *testing.T) {
 	}
 }
 
+// TestManagementAndPreferenceAPIWorkflow 覆盖成员管理、批量排班与个人偏好的 API 流程
 func TestManagementAndPreferenceAPIWorkflow(t *testing.T) {
 	db := openCleanTestDatabase(t)
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -128,7 +129,9 @@ func TestManagementAndPreferenceAPIWorkflow(t *testing.T) {
 	workspace := apiRequest(t, router, http.MethodPost, "/api/v1/workspaces", alice.AccessToken, map[string]any{"name": "护理一组", "timezone": "Asia/Shanghai"})
 	workspaceID := jsonUint(t, workspace, "data", "id")
 	invitation := apiRequest(t, router, http.MethodPost, fmt.Sprintf("/api/v1/workspaces/%d/invitations", workspaceID), alice.AccessToken, map[string]any{"username": "bob", "role": "MEMBER"})
-	if jsonString(t, invitation, "data", "username") != "bob" { t.Fatalf("username invitation did not resolve: %+v", invitation) }
+	if jsonString(t, invitation, "data", "username") != "bob" {
+		t.Fatalf("username invitation did not resolve: %+v", invitation)
+	}
 	apiRequest(t, router, http.MethodPost, "/api/v1/invitations/accept", bob.AccessToken, map[string]any{"token": jsonString(t, invitation, "data", "token")})
 
 	apiRequest(t, router, http.MethodPatch, fmt.Sprintf("/api/v1/workspaces/%d", workspaceID), alice.AccessToken, map[string]any{"name": "护理协同组", "timezone": "Asia/Shanghai"})
@@ -173,6 +176,7 @@ func TestManagementAndPreferenceAPIWorkflow(t *testing.T) {
 	}
 }
 
+// TestSpreadsheetImportPreviewCommitAndRollback 覆盖表格上传、预览、冲突处理、提交与撤销
 func TestSpreadsheetImportPreviewCommitAndRollback(t *testing.T) {
 	db := openCleanTestDatabase(t)
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -244,6 +248,7 @@ func TestSpreadsheetImportPreviewCommitAndRollback(t *testing.T) {
 	}
 }
 
+// TestImageImportAccessDownloadAndCancellation 覆盖图片导入的权限、原文件下载和任务取消
 func TestImageImportAccessDownloadAndCancellation(t *testing.T) {
 	db := openCleanTestDatabase(t)
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -288,6 +293,7 @@ func TestImageImportAccessDownloadAndCancellation(t *testing.T) {
 	}
 }
 
+// TestUncertainImportItemCanBeCorrectedBeforeCommit 验证不确定草稿可人工修正后再提交
 func TestUncertainImportItemCanBeCorrectedBeforeCommit(t *testing.T) {
 	db := openCleanTestDatabase(t)
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -329,6 +335,7 @@ func TestUncertainImportItemCanBeCorrectedBeforeCommit(t *testing.T) {
 	}
 }
 
+// TestOwnerTransferInvitationRevocationAndWorkspaceDeletion 覆盖工作区转让、邀请撤销及解散操作
 func TestOwnerTransferInvitationRevocationAndWorkspaceDeletion(t *testing.T) {
 	db := openCleanTestDatabase(t)
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -362,6 +369,7 @@ func TestOwnerTransferInvitationRevocationAndWorkspaceDeletion(t *testing.T) {
 	}
 }
 
+// TestRefreshJWTRequiresCSRFAndRotatesCookie 验证刷新接口要求 CSRF 且轮换刷新 Cookie
 func TestRefreshJWTRequiresCSRFAndRotatesCookie(t *testing.T) {
 	db := openCleanTestDatabase(t)
 	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -433,6 +441,7 @@ type loginResult struct {
 	AccessToken string
 }
 
+// registerAndLogin 为接口测试创建账号并取得访问令牌和用户标识
 func registerAndLogin(t *testing.T, handler http.Handler, username, email string) loginResult {
 	t.Helper()
 	registered := apiRequest(t, handler, http.MethodPost, "/api/v1/auth/register", "", map[string]any{
@@ -443,6 +452,7 @@ func registerAndLogin(t *testing.T, handler http.Handler, username, email string
 	return loginResult{UserID: userID, AccessToken: jsonString(t, login, "data", "accessToken")}
 }
 
+// apiRequest 发送测试 JSON 请求并解码响应，要求返回 2xx 状态码
 func apiRequest(t *testing.T, handler http.Handler, method, path, accessToken string, body any) map[string]any {
 	t.Helper()
 	var payload []byte
@@ -471,6 +481,7 @@ func apiRequest(t *testing.T, handler http.Handler, method, path, accessToken st
 	return result
 }
 
+// rawAPIRequest 构造并执行 HTTP 测试请求，保留原始响应供断言
 func rawAPIRequest(handler http.Handler, method, path, accessToken string, body []byte) (int, []byte) {
 	request := httptest.NewRequest(method, path, bytes.NewReader(body))
 	request.Header.Set("Origin", "http://localhost:5173")
@@ -482,6 +493,7 @@ func rawAPIRequest(handler http.Handler, method, path, accessToken string, body 
 	return response.Code, response.Body.Bytes()
 }
 
+// multipartRequest 组装含文件与表单字段的上传请求并执行接口测试
 func multipartRequest(t *testing.T, handler http.Handler, path, accessToken string, fields map[string]string, fileField, fileName string, content []byte) map[string]any {
 	t.Helper()
 	var body bytes.Buffer
@@ -517,6 +529,7 @@ func multipartRequest(t *testing.T, handler http.Handler, path, accessToken stri
 	return result
 }
 
+// jsonUint 从响应路径提取数字 ID，并校验数据类型
 func jsonUint(t *testing.T, value map[string]any, path ...string) uint64 {
 	t.Helper()
 	current := jsonAt(t, value, path...)
@@ -527,6 +540,7 @@ func jsonUint(t *testing.T, value map[string]any, path ...string) uint64 {
 	return uint64(number)
 }
 
+// jsonString 从响应路径提取字符串，并校验数据类型
 func jsonString(t *testing.T, value map[string]any, path ...string) string {
 	t.Helper()
 	current := jsonAt(t, value, path...)
@@ -537,6 +551,7 @@ func jsonString(t *testing.T, value map[string]any, path ...string) string {
 	return text
 }
 
+// jsonArray 从响应路径提取数组，并校验数据类型
 func jsonArray(t *testing.T, value map[string]any, path ...string) []any {
 	t.Helper()
 	current := jsonAt(t, value, path...)
@@ -547,6 +562,7 @@ func jsonArray(t *testing.T, value map[string]any, path ...string) []any {
 	return items
 }
 
+// jsonAt 沿键路径查找响应字段，中间节点非对象时终止测试，末级缺失返回 nil
 func jsonAt(t *testing.T, value map[string]any, path ...string) any {
 	t.Helper()
 	var current any = value
@@ -560,6 +576,7 @@ func jsonAt(t *testing.T, value map[string]any, path ...string) any {
 	return current
 }
 
+// openCleanTestDatabase 初始化并清理 HTTP 专用测试数据库，注册连接清理回调
 func openCleanTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	admin, err := database.Open(context.Background(), "root:123456@tcp(127.0.0.1:3306)/mysql?charset=utf8mb4&parseTime=true&loc=UTC")

@@ -1,6 +1,6 @@
 # Shiftory
 
-Shiftory 是面向小团队的排班协同应用。当前仓库已实现完整 MVP：JWT 登录、多工作区与角色权限、手动排班、团队日历、XLSX/XLS 导入、图片 AI 异步识别、人工预览纠错、事务提交与全量撤销，以及六套浅色主题。
+Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录、多工作区与角色权限、手动排班、团队日历、XLSX/XLS 导入、图片 AI 异步识别、人工预览纠错、事务提交与全量撤销，以及六套浅色主题；功能完成度以当前源码与实际验收为准。
 
 ## 技术结构
 
@@ -15,49 +15,76 @@ Shiftory 是面向小团队的排班协同应用。当前仓库已实现完整 M
 
 当前历史路由仍按功能文件集中在 `httpserver` 中，新增或重构接口应沿用上述边界；不通过一次性搬迁制造跨模块回归。
 
-详细需求与设计决策见 [需求文档](docs/需求.md)，接口契约见 [OpenAPI 3.1](shiftory-server/api/openapi.yaml)。
+项目资料统一维护在 [.agent 项目索引](.agent/PROJECT.md)，包括 [产品需求](.agent/REQUIREMENTS.md) 与 [工程约束](.agent/ENGINEERING.md)；接口契约见 [OpenAPI 3.1](shiftory-server/api/openapi.yaml)。
 
 ## 本地启动
 
-前置环境：Go 1.27.1、Node.js 24（含 npm）、MySQL 8.4。仓库根目录的 `.env.example` 列出全部环境变量。后端优先读取系统环境变量；缺失项会按顺序查找 `SHIFTORY_ENV_FILE`、Linux 的 `/etc/shiftory/shiftory.env`，以及当前目录和上两级目录中的 `.env.development`、`.env.local`、`.env`、`.env.production`。显式指定的 `SHIFTORY_ENV_FILE` 不存在或格式错误时会直接报错。前端优先使用 PATH 中的 pnpm，其次使用 Corepack；两者都不可用时，启动脚本会通过 npm 缓存临时运行项目锁定的 pnpm 版本，不会修改全局 PATH。
+前置环境：Go 1.27.1、Node.js 24（含 npm）、MySQL 8.4。后端使用 **进程环境变量 + YAML 配置文件**，前端继续使用 Vite 原有的 env 文件加载方式，不读取 YAML。
+
+后端 API 和迁移程序接受相同的启动参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--env production` | 生产模式，省略参数时的默认值 |
+| `--env development` | 开发模式 |
+| `--config /path/to/config.yaml` | 显式指定 YAML 文件；不改变 `--env` 选择的模式 |
+
+后端配置优先级为：**非空进程环境变量 > 所选 YAML > 内置默认值**。YAML 使用平铺的小写键，环境变量为同名键大写后添加 `SHIFTORY_` 前缀，例如 `database_dsn` 对应 `SHIFTORY_DATABASE_DSN`、`ai_enabled` 对应 `SHIFTORY_AI_ENABLED`。空白环境变量沿用文件值；布尔值 `false` 可正常覆盖 `true`。可配置项列在 `config/development.example.yaml` 和 `config/production.example.yaml` 中。
+
+未指定 `--config` 时，程序依次查找当前工作目录、父目录和祖父目录下的 `config/<模式>.yaml`，只加载首个命中文件，不合并其他文件。未发现文件时允许使用环境变量和内置默认值；显式路径不存在、YAML 格式错误、未知键或非法配置值会直接报错。YAML 中的相对文件路径仍相对于**进程工作目录**，生产部署建议全部使用绝对路径。后端不再读取任何 env 文件，`SHIFTORY_ENV` 和 `SHIFTORY_ENV_FILE` 不再生效。
+
+首次使用时复制样例，然后修改数据库等参数；实际配置文件被 Git 忽略，请勿将密钥写入样例。已有本地 YAML 时不要重复覆盖：
+
+```powershell
+Copy-Item config/development.example.yaml config/development.yaml
+Copy-Item config/production.example.yaml config/production.yaml
+```
+
+前端继续在 `shiftory-web` 下使用 `.env`、`.env.local`、`.env.development`、`.env.production` 等文件，以及原有 `VITE_*` 变量。前端启动优先使用 PATH 中的 pnpm，其次使用 Corepack；两者都不可用时，启动脚本会通过 npm 缓存临时运行项目锁定的 pnpm 版本。
 
 ### GoLand 启动
 
 仓库的 `.run` 目录包含可共享的 GoLand 运行配置，重新打开项目或执行 **File > Reload All from Disk** 后，可以直接使用：
 
 - `Shiftory Migrate`：执行一次数据库迁移；首次启动或数据库结构变化后运行。
-- `Shiftory API`：启动后端 API，图片 AI Worker 按配置在同一进程内启用。
+- `Shiftory API`：启动后端 API，图片 AI Worker 按配置在同一进程内启用；共享配置传入 `--env development --config <项目目录>/config/development.yaml`。
 - `Shiftory Web (pnpm)`：通过 GoLand 的 npm 类型运行 `pnpm dev`。JetBrains 将 npm、Yarn 和 pnpm 脚本统一放在这个运行配置类型中，所以无需创建自定义 Shell 配置。
 - `Shiftory Development`：同时启动 API 和前端，适合日常开发；不会自动执行迁移。
 
 运行配置默认不会自动显示在 Services 中。按 `Alt+8` 打开 Services，依次选择 **Add Service > Run Configuration**，加入 `Go Application`、`npm` 和 `Compound` 类型；其中 `npm` 节点就是前端 pnpm 服务。
 
-前端配置使用 GoLand 的项目级包管理器。若启动日志实际调用的不是 pnpm，请在 **Settings > Languages & Frameworks > JavaScript Runtime > Package manager** 中选择项目的 pnpm 或 Corepack，然后重新运行。后端从系统环境变量或仓库根目录的 `.env.development` 自动加载配置；要在 API 内启用图片 Worker，请确保配置中有 `SHIFTORY_AI_ENABLED=true`。
+前端配置使用 GoLand 的项目级包管理器。若启动日志实际调用的不是 pnpm，请在 **Settings > Languages & Frameworks > JavaScript Runtime > Package manager** 中选择项目的 pnpm 或 Corepack，然后重新运行。开发启动脚本向后端显式传入开发模式和 YAML 路径；要在 API 内启用图片 Worker，请设置 YAML 的 `ai_enabled: true`，或进程环境变量 `SHIFTORY_AI_ENABLED=true`。
 
 ### 一键开发启动
 
-仓库根目录已提供被 Git 忽略的 `.env.development`，其中包含完整的本地开发配置。按需修改数据库、端口、JWT 文件、上传目录和 AI Worker 参数，然后执行：
+准备好被 Git 忽略的 `config/development.yaml`，按需修改数据库、端口、JWT 文件、上传目录和 AI Worker 参数，然后执行：
 
 ```powershell
 .\scripts\start-dev.ps1
 ```
 
-脚本会读取 `.env.development`，先执行数据库迁移，再分别打开 API 和前端开发服务器窗口。默认访问地址是 `http://127.0.0.1:8080` 和 `http://localhost:5173`。常用选项：
+脚本将 `--env development --config <YAML路径>` 同时传给迁移和 API，先执行数据库迁移，再分别打开 API 和前端开发服务器窗口。默认访问地址是 `http://127.0.0.1:8080` 和 `http://localhost:5173`。常用选项：
 
 ```powershell
-.\scripts\start-dev.ps1 -ValidateOnly   # 检查配置、目录和开发工具，不启动服务
+.\scripts\start-dev.ps1 -ValidateOnly   # 检查配置路径、目录和开发工具，不启动服务；YAML 由后端启动时校验
 .\scripts\start-dev.ps1 -SkipMigrate    # 跳过迁移
 .\scripts\start-dev.ps1 -BackendOnly    # 只启动 API
 .\scripts\start-dev.ps1 -FrontendOnly   # 只启动前端
 .\scripts\start-dev.ps1 -EnableAI       # 临时启用 API 内的图片识别能力
-.\scripts\start-dev.ps1 -EnvFile .env.local
+.\scripts\start-dev.ps1 -ConfigFile config/custom-development.yaml
 ```
+
+### 环境与日志
+
+启动参数 `--env` 支持 `development` 和 `production`，默认是 `production`。环境选择只影响自动发现的配置文件和日志默认值：开发环境默认 `debug` + 文本日志，生产环境默认 `info` + JSON 日志。可通过 `SHIFTORY_LOG_LEVEL=debug|info|warn|error` 和 `SHIFTORY_LOG_FORMAT=text|json` 单独覆盖。API 启动时会打印配置摘要、数据库、JWT、Worker 和监听地址；每次 HTTP 调用会记录请求 ID、方法、路径、状态和耗时，图片上传还会记录校验、存储和任务创建阶段。日志不会记录 API Key、令牌或图片内容。
 
 图片 AI Worker 运行在 API 进程内。设置 `SHIFTORY_AI_ENABLED=true`、模型名称和 API Key 后启用；未启用时普通排班和 Excel 导入仍可用。`SHIFTORY_WORKER_MAX_CONCURRENCY` 控制同时处理的图片任务数，`SHIFTORY_WORKER_LEASE` 控制任务处理租约，`SHIFTORY_WORKER_POLL_INTERVAL` 控制无唤醒信号时的数据库扫描周期。
 
 如本机没有 MySQL，可在仓库根目录启动容器：
 
 ```powershell
+$env:COMPOSE_DISABLE_ENV_FILE = "1" # Compose 只使用当前进程环境变量
+$env:MYSQL_ROOT_PASSWORD = "123456" # 与开发 YAML 示例一致；生产环境必须自行设置
 docker compose up -d mysql
 ```
 
@@ -65,8 +92,8 @@ docker compose up -d mysql
 
 ```powershell
 cd shiftory-server
-go run ./cmd/migrate
-go run ./cmd/api
+go run ./cmd/migrate --env development
+go run ./cmd/api --env development
 ```
 
 另开终端启动前端：
@@ -81,17 +108,29 @@ pnpm dev
 
 ### Linux 单机部署
 
-Linux 单机只需要运行 API 二进制，图片 AI Worker 会在同一进程内启动。将配置放到 `/etc/shiftory/shiftory.env`，或通过 `SHIFTORY_ENV_FILE` 指定其他绝对路径；`SHIFTORY_UPLOAD_DIR`、`SHIFTORY_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
+Linux 单机只需要运行 API 二进制，图片 AI Worker 会在同一进程内启动。将生产 YAML 放到 `/etc/shiftory/production.yaml`，通过 `--config` 指定其绝对路径；`SHIFTORY_UPLOAD_DIR`、`SHIFTORY_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
 
 ```bash
 ./scripts/start-linux.sh build
-./scripts/start-linux.sh migrate
+./scripts/start-linux.sh migrate --config /etc/shiftory/production.yaml
 sudo install -m 0755 deploy/shiftory.service /etc/systemd/system/shiftory.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now shiftory
 ```
 
-`deploy/shiftory.service` 默认使用 `/opt/shiftory/bin/shiftory-api`、`/etc/shiftory/shiftory.env` 和 `shiftory` 系统用户；如果安装目录不同，请同步调整 unit 文件。数据库迁移只在发布时执行，不由 systemd 每次重启重复触发。
+`deploy/shiftory.service` 默认使用 `/opt/shiftory/bin/shiftory-api`、`/etc/shiftory/production.yaml` 和 `shiftory` 系统用户；如果安装目录不同，请同步调整 unit 文件。数据库迁移只在发布时执行，不由 systemd 每次重启重复触发。
+
+### Docker
+
+镜像将公开的生产 YAML 样例安装为 `/app/config/production.yaml`，Compose 默认传入生产模式。可将自己的 YAML 只读挂载到该路径，并用 Compose 的 `environment` 注入数据库密码、AI Key 等覆盖值。修改 `command` 时，启动参数会同时传递给迁移和 API。
+
+```bash
+COMPOSE_DISABLE_ENV_FILE=1 docker compose up -d --build
+# 仅检查 Compose 配置，不启动容器：
+COMPOSE_DISABLE_ENV_FILE=1 docker compose config --quiet
+```
+
+Compose 自身具有隐式读取根目录 `.env` 的行为，因此部署命令显式设置 `COMPOSE_DISABLE_ENV_FILE=1`。这不会禁用前端 Vite 读取 `shiftory-web/.env*`。
 
 ## 图片 AI Worker
 
@@ -102,14 +141,14 @@ $env:SHIFTORY_AI_MODEL = "your-vision-model"
 $env:SHIFTORY_AI_BASE_URL = "https://your-provider.example/v1"
 $env:SHIFTORY_AI_API_KEY = "your-key"
 $env:SHIFTORY_AI_ENABLED = "true"
-go run ./cmd/api
+go run ./cmd/api --env development
 ```
 
 图片原文件以内联多模态消息发送；模型被要求按严格 JSON Schema 输出，温度为 0。内置 Worker 使用 MySQL 租约、心跳、重试延迟和 `SKIP LOCKED` 领取任务，并通过固定容量的 ants 协程池限制并发。模型结果只生成预览，不会直接写入正式排班；不确定项必须由用户人工修正或保持跳过。AI 供应商的在线连通性需要使用实际密钥单独验收。
 
 ## 验证
 
-后端测试会自动创建互相隔离的 MySQL 测试库：
+后端集成测试需要已有可访问的 MySQL，会创建专用测试库。`SHIFTORY_TEST_DATABASE_DSN` 仅供数据库测试使用，需通过进程环境变量提供，不从运行时 YAML 或 env 文件读取：
 
 ```powershell
 cd shiftory-server
@@ -138,5 +177,4 @@ API 启动后，可从仓库根目录运行真实 HTTP 验收：
 - 工作区 ID 必须显式出现在业务 API 路径中，后端每次请求重新检查数据库成员关系，不信任 Pinia 中的角色。
 - 普通成员可以查看同工作区其他成员的完整已确认排班（班次、时间、跨日与备注），但不能修改他人排班，也不能读取他人的原始导入文件或 AI 响应。
 - 导入提交与撤销均为全有或全无事务；预览后的版本变化会触发冲突，不进行静默覆盖或部分恢复。
-- JWT 私钥、上传文件、构建产物和本地环境文件已排除在 Git 跟踪之外；不要提交真实密钥。
-
+- JWT 私钥、上传文件、构建产物和本地 YAML 和前端 env 文件已排除在 Git 跟踪之外；不要提交真实密钥。

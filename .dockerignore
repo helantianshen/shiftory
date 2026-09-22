@@ -1,0 +1,12 @@
+.git
+.idea
+.agent
+shiftory-web/node_modules
+shiftory-web/dist
+shiftory-server/uploads
+shiftory-server/var
+*.env
+.env
+.env.*
+config/*.yaml
+!config/*.example.yaml

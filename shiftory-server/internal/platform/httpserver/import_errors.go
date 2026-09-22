@@ -9,9 +9,8 @@ import (
 	"shiftory-server/internal/importer"
 )
 
-// writeImportValidationFailure translates importer-layer validation errors into
-// the public API envelope. The HTTP layer owns status codes and JSON shape;
-// importer errors remain independent from Gin and HTTP concerns.
+// writeImportValidationFailure 将 importer 校验错误转换为公开 API 响应
+// HTTP 层负责状态码和 JSON 结构，importer 错误不依赖 Gin 或 HTTP
 func writeImportValidationFailure(c *gin.Context, err error) {
 	var validationErr *importer.ValidationError
 	if errors.As(err, &validationErr) {

@@ -2,6 +2,7 @@ package importjob
 
 import "testing"
 
+// TestJobStateAllowsSuccessfulLifecycle 验证导入任务从上传到完成和撤销的合法迁移
 func TestJobStateAllowsSuccessfulLifecycle(t *testing.T) {
 	states := []State{
 		StateUploaded,
@@ -19,6 +20,7 @@ func TestJobStateAllowsSuccessfulLifecycle(t *testing.T) {
 	}
 }
 
+// TestJobStateAllowsFailureAndCancellationPaths 验证处理中任务允许失败或取消的迁移路径
 func TestJobStateAllowsFailureAndCancellationPaths(t *testing.T) {
 	if !StateParsing.CanTransitionTo(StateFailed) {
 		t.Fatal("parsing must be able to fail")
@@ -31,6 +33,7 @@ func TestJobStateAllowsFailureAndCancellationPaths(t *testing.T) {
 	}
 }
 
+// TestTerminalJobStatesRejectFurtherTransitions 验证失败、取消与撤销终态不能继续迁移
 func TestTerminalJobStatesRejectFurtherTransitions(t *testing.T) {
 	for _, state := range []State{StateFailed, StateCancelled, StateRolledBack} {
 		if state.CanTransitionTo(StatePending) {

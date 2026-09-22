@@ -16,6 +16,7 @@ import (
 
 var allowedThemes = map[string]bool{"mint": true, "sky": true, "lilac": true, "sakura": true, "amber": true, "graphite": true}
 
+// getPreferences 读取个人主题与当前工作区，未保存时返回薄荷主题和空工作区
 func (s *server) getPreferences(c *gin.Context) {
 	var workspaceID sql.NullInt64
 	var theme string
@@ -35,6 +36,7 @@ func (s *server) getPreferences(c *gin.Context) {
 	success(c, http.StatusOK, result)
 }
 
+// updatePreferences 校验主题及工作区访问权限后保存个人偏好
 func (s *server) updatePreferences(c *gin.Context) {
 	var request struct {
 		CurrentWorkspaceID *uint64 `json:"currentWorkspaceId"`
@@ -60,6 +62,7 @@ ON DUPLICATE KEY UPDATE current_workspace_id = VALUES(current_workspace_id), the
 	success(c, http.StatusOK, gin.H{"currentWorkspaceId": request.CurrentWorkspaceID, "theme": request.Theme})
 }
 
+// updateWorkspace 允许管理员修改工作区名称与有效 IANA 时区
 func (s *server) updateWorkspace(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -89,6 +92,7 @@ func (s *server) updateWorkspace(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"id": workspaceID, "name": strings.TrimSpace(request.Name), "timezone": request.Timezone})
 }
 
+// updateMember 限制管理员任免权限并更新角色、状态和离开时间
 func (s *server) updateMember(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -105,6 +109,7 @@ func (s *server) updateMember(c *gin.Context) {
 		}
 		return
 	}
+	// 先约束操作者与目标角色的关系，管理员不能管理所有者或其他管理员
 	var targetRole string
 	if err := s.db.QueryRow(`SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, workspaceID, targetID).Scan(&targetRole); err != nil {
 		failure(c, http.StatusNotFound, "MEMBER_NOT_FOUND", "成员不存在", nil)
@@ -139,6 +144,7 @@ UPDATE workspace_members SET role = ?, status = ?, left_at = ? WHERE workspace_i
 	success(c, http.StatusOK, gin.H{"userId": targetID, "role": request.Role, "status": request.Status})
 }
 
+// updateShift 在事务中更新班次定义和别名，不修改既有排班快照
 func (s *server) updateShift(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -193,6 +199,7 @@ WHERE id = ? AND workspace_id = ?`, request.Name, request.Code, start, end, requ
 		failure(c, http.StatusNotFound, "SHIFT_NOT_FOUND", "班次不存在", nil)
 		return
 	}
+	// 在同一事务中替换别名，别名冲突会连同班次更新一起回滚
 	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM shift_aliases WHERE shift_id = ?`, shiftID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法更新班次别名", nil)
 		return
@@ -218,6 +225,7 @@ WHERE id = ? AND workspace_id = ?`, request.Name, request.Code, start, end, requ
 	success(c, http.StatusOK, gin.H{"id": shiftID, "name": request.Name, "code": request.Code, "enabled": *request.Enabled})
 }
 
+// batchSchedules 逐日校验并保存批量排班，全部日期与修订共用一个事务
 func (s *server) batchSchedules(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -268,6 +276,7 @@ func (s *server) batchSchedules(c *gin.Context) {
 		}
 		pending = append(pending, pendingDay{day: day})
 	}
+	// 全部日期预校验通过后开启事务，任一天写入或修订失败都会撤销整批修改
 	tx, err := s.db.BeginTx(c.Request.Context(), nil)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法开始批量排班事务", nil)
@@ -311,6 +320,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, saved.ID, workspaceID, request.UserID, s
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// prepareSegments 将请求时间段转换为领域值，并补齐引用班次的快照
 func (s *server) prepareSegments(workspaceID uint64, input []scheduleSegmentRequest) ([]schedule.Segment, error) {
 	segments := make([]schedule.Segment, 0, len(input))
 	for index, item := range input {
@@ -334,6 +344,7 @@ func (s *server) prepareSegments(workspaceID uint64, input []scheduleSegmentRequ
 	return segments, nil
 }
 
+// scheduleHistory 在工作区鉴权后读取目标日期的排班修订快照
 func (s *server) scheduleHistory(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -386,6 +397,7 @@ FROM schedule_revisions WHERE workspace_id = ? AND user_id = ? AND work_date = ?
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// overview 聚合指定日期团队状态与个人排班、待处理导入摘要
 func (s *server) overview(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -450,6 +462,7 @@ func (s *server) overview(c *gin.Context) {
 	success(c, http.StatusOK, result)
 }
 
+// listAudits 向管理员返回工作区最近的审计记录，最多二百条
 func (s *server) listAudits(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -489,6 +502,7 @@ FROM audit_logs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200`, work
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// recordAudit 尽力写入工作区操作审计，数据库错误不向调用方返回
 func (s *server) recordAudit(c *gin.Context, workspaceID, actorID uint64, action, targetType string, targetID any, details any) {
 	payload, _ := json.Marshal(details)
 	requestID, _ := c.Get(requestIDKey)

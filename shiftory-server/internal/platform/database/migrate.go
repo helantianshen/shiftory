@@ -9,6 +9,7 @@ import (
 	"shiftory-server/migrations"
 )
 
+// Migrate 配置内嵌迁移文件并执行待应用的 Goose Up 迁移
 func Migrate(db *sql.DB) error {
 	goose.SetBaseFS(migrations.Files)
 	if err := goose.SetDialect("mysql"); err != nil {

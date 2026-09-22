@@ -1,3 +1,4 @@
+// Package database 提供 MySQL 连接池与内嵌 Goose 迁移的执行入口
 package database
 
 import (
@@ -9,6 +10,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+// Open 创建连接池并验证数据库连通性，成功后由调用方关闭连接池
 func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
+// TestWriteImportValidationFailure 验证结构化工作簿错误的 HTTP 状态与可读详情
 func TestWriteImportValidationFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

@@ -6,6 +6,7 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
+// TestAggregateDistinguishesRestWorkingAndMissing 验证工作、明确休息与缺失记录分别统计
 func TestAggregateDistinguishesRestWorkingAndMissing(t *testing.T) {
 	date := schedule.MustDate("2026-09-04")
 	result := Aggregate(
@@ -26,6 +27,7 @@ func TestAggregateDistinguishesRestWorkingAndMissing(t *testing.T) {
 	}
 }
 
+// TestAggregateMarksAllRestOnlyWhenEverySelectedMemberExplicitlyRests 验证全部休息要求所有选中成员都有明确休息记录
 func TestAggregateMarksAllRestOnlyWhenEverySelectedMemberExplicitlyRests(t *testing.T) {
 	date := schedule.MustDate("2026-09-04")
 	result := Aggregate(
@@ -41,6 +43,7 @@ func TestAggregateMarksAllRestOnlyWhenEverySelectedMemberExplicitlyRests(t *test
 	}
 }
 
+// TestAggregateNeverMarksEmptySelectionAllRest 验证空成员选择不产生全部休息标记
 func TestAggregateNeverMarksEmptySelectionAllRest(t *testing.T) {
 	date := schedule.MustDate("2026-09-04")
 	result := Aggregate([]schedule.Date{date}, nil, nil)
@@ -49,6 +52,7 @@ func TestAggregateNeverMarksEmptySelectionAllRest(t *testing.T) {
 	}
 }
 
+// TestAggregateCrossDayBelongsOnlyToStartDate 验证跨日排班只归属开始日期
 func TestAggregateCrossDayBelongsOnlyToStartDate(t *testing.T) {
 	start := schedule.MustDate("2026-09-04")
 	next := schedule.MustDate("2026-09-05")
@@ -70,4 +74,5 @@ func TestAggregateCrossDayBelongsOnlyToStartDate(t *testing.T) {
 	}
 }
 
+// clock 将测试时刻转换为可选时间字段
 func clock(value schedule.Clock) *schedule.Clock { return &value }

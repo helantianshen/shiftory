@@ -12,10 +12,13 @@ import (
 	"shiftory-server/internal/schedule"
 )
 
+// MySQLRepository 使用共享 MySQL 连接池实现本模块的持久化操作
 type MySQLRepository struct{ db *sql.DB }
 
+// NewMySQLRepository 使用调用方管理的数据库连接池创建图片任务仓储
 func NewMySQLRepository(db *sql.DB) *MySQLRepository { return &MySQLRepository{db: db} }
 
+// Claim 锁定一个到期任务或过期租约任务，增加尝试次数并写入领取者
 func (r *MySQLRepository) Claim(ctx context.Context, workerID string, lease time.Duration) (*Job, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -26,6 +29,7 @@ func (r *MySQLRepository) Claim(ctx context.Context, workerID string, lease time
 	var start, end string
 	var instructions sql.NullString
 	var mappingJSON []byte
+	// SKIP LOCKED 允许多个 Worker 并行领取任务，过期的 PARSING 租约可被重新领取
 	err = tx.QueryRowContext(ctx, `
 SELECT j.id, j.workspace_id, j.upload_user_id, j.target_user_id,
        DATE_FORMAT(j.period_start, '%Y-%m-%d'), DATE_FORMAT(j.period_end, '%Y-%m-%d'),
@@ -55,6 +59,7 @@ ORDER BY j.created_at, j.id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(
 			return nil, fmt.Errorf("decode job mapping hints: %w", err)
 		}
 	}
+	// 领取与尝试次数递增、租约绑定一并提交，外部识别在事务结束后执行
 	job.AttemptCount++
 	job.LeaseOwner = workerID
 	result, err := tx.ExecContext(ctx, `
@@ -74,6 +79,7 @@ WHERE id = ?`, job.AttemptCount, workerID, time.Now().UTC().Add(lease), job.ID)
 	return &job, nil
 }
 
+// Heartbeat 仅为仍由指定 Worker 持有的解析任务延长租约
 func (r *MySQLRepository) Heartbeat(ctx context.Context, jobID uint64, workerID string, lease time.Duration) error {
 	result, err := r.db.ExecContext(ctx, `
 UPDATE import_jobs SET heartbeat_at = UTC_TIMESTAMP(6), lease_expires_at = ?
@@ -87,6 +93,7 @@ WHERE id = ? AND state = 'PARSING' AND lease_owner = ?`, time.Now().UTC().Add(le
 	return nil
 }
 
+// Complete 在同一事务中保存预览项并进入待审核状态，已待审核任务按幂等完成处理
 func (r *MySQLRepository) Complete(ctx context.Context, job Job, result Result) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -98,11 +105,13 @@ func (r *MySQLRepository) Complete(ctx context.Context, job Job, result Result) 
 		return err
 	}
 	if state == "NEEDS_REVIEW" {
+		// 已写入预览的任务视为幂等完成，重复完成不得覆盖人工修改
 		return tx.Commit()
 	}
 	if state != "PARSING" || leaseOwner != job.LeaseOwner {
 		return errors.New("worker no longer owns import job")
 	}
+	// 获得任务所有权后整体替换预览项，与任务进入待审核状态一起提交
 	if _, err := tx.ExecContext(ctx, `DELETE FROM import_items WHERE import_job_id = ?`, job.ID); err != nil {
 		return err
 	}
@@ -141,14 +150,17 @@ WHERE id = ? AND state = 'PARSING' AND lease_owner = ?`, result.ItemCount, resul
 	return tx.Commit()
 }
 
+// Retry 释放任务租约并设置下一次允许领取的时间
 func (r *MySQLRepository) Retry(ctx context.Context, job Job, processErr error, next time.Time) error {
 	return r.finishAttempt(ctx, job, "PENDING", "RETRYABLE_AI_ERROR", processErr, &next)
 }
 
+// Fail 释放任务租约并记录不可继续重试的处理失败
 func (r *MySQLRepository) Fail(ctx context.Context, job Job, processErr error) error {
 	return r.finishAttempt(ctx, job, "FAILED", "AI_PROCESSING_FAILED", processErr, nil)
 }
 
+// finishAttempt 按任务状态与租约所有者条件结束尝试，限制错误文本长度
 func (r *MySQLRepository) finishAttempt(ctx context.Context, job Job, state, code string, processErr error, retryAt *time.Time) error {
 	message := strings.TrimSpace(processErr.Error())
 	if len(message) > 4000 {

@@ -16,3 +16,5 @@ shiftory-web/.vite/
 shiftory-web/playwright-report/
 shiftory-web/test-results/
 
+/config/*.yaml
+!/config/*.example.yaml

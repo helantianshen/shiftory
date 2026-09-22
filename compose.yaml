@@ -1,22 +1,42 @@
 services:
+  app:
+    build: { context: ., dockerfile: Dockerfile }
+    image: shiftory:local
+    command: ["--env", "production", "--config", "/app/config/production.yaml"]
+    depends_on:
+      mysql: { condition: service_healthy }
+    environment:
+      SHIFTORY_DATABASE_DSN: root:${MYSQL_ROOT_PASSWORD:-change-me}@tcp(mysql:3306)/${MYSQL_DATABASE:-shiftory}?charset=utf8mb4&parseTime=true&loc=UTC
+      SHIFTORY_PUBLIC_ORIGIN:
+      SHIFTORY_LOG_LEVEL:
+      SHIFTORY_LOG_FORMAT:
+      SHIFTORY_AI_ENABLED:
+      SHIFTORY_AI_MODEL:
+      SHIFTORY_AI_BASE_URL:
+      SHIFTORY_AI_API_KEY:
+    ports: ["${SHIFTORY_PORT:-8080}:8080"]
+    volumes:
+      - shiftory-uploads:/app/uploads
+      - shiftory-keys:/app/var
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: "123456"
-      MYSQL_DATABASE: shiftory
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-shiftory}
     ports:
-      - "3306:3306"
+      - "${MYSQL_PORT:-3306}:3306"
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
     volumes:
       - shiftory-mysql:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 3s
       retries: 20
 
 volumes:
   shiftory-mysql:
-
+  shiftory-uploads:
+  shiftory-keys:

@@ -10,6 +10,7 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+// TestScheduleImportTemplateKeepsISODateTextFormat 验证模板日期单元格保持 ISO 文本格式
 func TestScheduleImportTemplateKeepsISODateTextFormat(t *testing.T) {
 	workbook, err := newScheduleImportTemplate([]string{"早班", "晚班"})
 	if err != nil {
@@ -48,6 +49,7 @@ func TestScheduleImportTemplateKeepsISODateTextFormat(t *testing.T) {
 	}
 }
 
+// TestScheduleImportTemplateAddsDropdownsAndCombinationValidation 验证模板包含下拉选项与字段组合校验
 func TestScheduleImportTemplateAddsDropdownsAndCombinationValidation(t *testing.T) {
 	workbook, err := newScheduleImportTemplate([]string{"早班", "晚班"})
 	if err != nil {
@@ -85,6 +87,7 @@ func TestScheduleImportTemplateAddsDropdownsAndCombinationValidation(t *testing.
 	}
 }
 
+// readZIPEntry 读取 XLSX 压缩包中的指定条目用于检查生成内容
 func readZIPEntry(t *testing.T, archive *zip.Reader, name string) string {
 	t.Helper()
 	for _, entry := range archive.File {

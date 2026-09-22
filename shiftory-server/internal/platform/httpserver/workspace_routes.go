@@ -16,12 +16,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// membership 表示一次权限检查读取到的工作区成员身份
 type membership struct {
 	UserID uint64
 	Role   string
 	Status string
 }
 
+// membership 查询有效工作区成员关系，失效成员不能据此取得访问权限
 func (s *server) membership(workspaceID, userID uint64) (membership, error) {
 	var member membership
 	err := s.db.QueryRow(`
@@ -30,8 +32,10 @@ WHERE workspace_id = ? AND user_id = ? AND status = 'ACTIVE'`, workspaceID, user
 	return member, err
 }
 
+// requireAdmin 判断已加载的成员角色是否为所有者或管理员
 func requireAdmin(member membership) bool { return member.Role == "OWNER" || member.Role == "ADMIN" }
 
+// parseID 读取非零路径 ID，失败时写入错误响应并返回 false
 func parseID(c *gin.Context, name string) (uint64, bool) {
 	id, err := strconv.ParseUint(c.Param(name), 10, 64)
 	if err != nil || id == 0 {
@@ -41,11 +45,13 @@ func parseID(c *gin.Context, name string) (uint64, bool) {
 	return id, true
 }
 
+// createWorkspaceRequest 承载工作区名称及 IANA 时区
 type createWorkspaceRequest struct {
 	Name     string `json:"name" binding:"required"`
 	Timezone string `json:"timezone" binding:"required"`
 }
 
+// createWorkspace 校验名称与时区，在事务中创建工作区、所有者关系和预置班次
 func (s *server) createWorkspace(c *gin.Context) {
 	var request createWorkspaceRequest
 	if err := c.ShouldBindJSON(&request); err != nil || strings.TrimSpace(request.Name) == "" {
@@ -75,6 +81,7 @@ INSERT INTO workspace_members (workspace_id, user_id, role, status) VALUES (?, ?
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法创建所有者关系", nil)
 		return
 	}
+	// 预置班次与所有者成员关系共用创建事务，避免出现只有部分初始数据的工作区
 	defaults := []struct {
 		name, code, start, end, color string
 		cross                         bool
@@ -99,6 +106,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, shift.name, shift.code, shift.start, sh
 	success(c, http.StatusCreated, gin.H{"id": uint64(id), "name": strings.TrimSpace(request.Name), "timezone": request.Timezone, "role": "OWNER"})
 }
 
+// listWorkspaces 列出当前用户仍具有有效成员关系的工作区
 func (s *server) listWorkspaces(c *gin.Context) {
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT w.id, w.name, w.timezone, m.role
@@ -122,6 +130,7 @@ WHERE m.user_id = ? AND m.status = 'ACTIVE' ORDER BY w.created_at`, currentUserI
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// listMembers 查询工作区成员资料及排班完整度、最近导入等摘要
 func (s *server) listMembers(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -184,12 +193,14 @@ WHERE m.workspace_id = ? ORDER BY FIELD(m.role, 'OWNER', 'ADMIN', 'MEMBER'), u.d
 	success(c, http.StatusOK, gin.H{"items": items})
 }
 
+// invitationRequest 承载邮箱或用户名二选一的邀请目标及角色
 type invitationRequest struct {
 	Email    string `json:"email"`
 	Username string `json:"username"`
 	Role     string `json:"role" binding:"required"`
 }
 
+// createInvitation 校验邀请方式与管理员权限，保存令牌摘要并返回邀请信息
 func (s *server) createInvitation(c *gin.Context) {
 	workspaceID, ok := parseID(c, "workspaceId")
 	if !ok {
@@ -205,6 +216,7 @@ func (s *server) createInvitation(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_INVITATION", "邀请信息无效", nil)
 		return
 	}
+	// 用户名邀请先解析有效账号的邮箱，两种入口最终沿用同一邮箱归属校验
 	var inviteEmail, inviteUsername string
 	if strings.TrimSpace(request.Username) != "" {
 		inviteUsername = strings.TrimSpace(request.Username)
@@ -225,6 +237,7 @@ func (s *server) createInvitation(c *gin.Context) {
 		}
 		inviteEmail = strings.ToLower(address.Address)
 	}
+	// 邀请令牌原文只用于交付，数据库保存摘要和过期时间
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		failure(c, http.StatusInternalServerError, "TOKEN_ERROR", "无法生成邀请", nil)
@@ -249,6 +262,7 @@ VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`, workspaceID, inviteEmail, request.Role, h
 	success(c, http.StatusCreated, resultData)
 }
 
+// acceptInvitation 校验邀请归属与有效性，在事务中更新成员关系和邀请状态
 func (s *server) acceptInvitation(c *gin.Context) {
 	var request struct {
 		Token        string `json:"token"`
@@ -269,6 +283,7 @@ func (s *server) acceptInvitation(c *gin.Context) {
 	var invitationID, workspaceID uint64
 	var email, role, status string
 	var expiresAt time.Time
+	// 支持令牌或邀请 ID 定位，行锁与邮箱归属检查共同保护接受流程
 	query := `SELECT id, workspace_id, email_normalized, role, status, expires_at FROM workspace_invitations WHERE token_hash = ? FOR UPDATE`
 	args := []any{hash[:]}
 	if request.InvitationID != 0 {
@@ -285,6 +300,7 @@ func (s *server) acceptInvitation(c *gin.Context) {
 		failure(c, http.StatusForbidden, "INVITATION_EMAIL_MISMATCH", "邀请邮箱与当前账号不匹配", nil)
 		return
 	}
+	// 接受邀请会激活成员关系并重置加入时间，随后在同一事务中标记邀请已接受
 	_, err = tx.ExecContext(c.Request.Context(), `
 INSERT INTO workspace_members (workspace_id, user_id, role, status, joined_at, left_at)
 VALUES (?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP(6), NULL)
@@ -306,6 +322,7 @@ UPDATE workspace_invitations SET status = 'ACCEPTED', accepted_by = ?, accepted_
 	success(c, http.StatusOK, gin.H{"workspaceId": workspaceID, "role": role})
 }
 
+// requireWorkspaceMember 验证当前用户的有效成员关系，返回权限错误或数据库错误响应
 func (s *server) requireWorkspaceMember(c *gin.Context, workspaceID uint64) (membership, bool) {
 	member, err := s.membership(workspaceID, currentUserID(c))
 	if errors.Is(err, sql.ErrNoRows) {
