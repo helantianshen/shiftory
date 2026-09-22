@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/goccy/go-yaml"
 )
 
@@ -21,8 +23,8 @@ type Config struct {
 	Environment          string
 	LogLevel             string
 	LogFormat            string
-	HTTPAddr             string
-	DatabaseDSN          string
+	Port                 int
+	MySQL                MySQLConfig
 	UploadDir            string
 	WebDir               string
 	PublicOrigin         string
@@ -41,6 +43,31 @@ type Config struct {
 	WorkerPollPeriod     time.Duration
 	WorkerMaxConcurrency int
 	AIRequestTimeout     time.Duration
+}
+
+// MySQLConfig 保存可由部署环境调整的数据库连接参数
+type MySQLConfig struct {
+	Host     string
+	Port     int
+	Database string
+	User     string
+	Password string
+}
+
+// DSN 使用驱动编码连接参数，字符集、时间解析和时区固定为应用约定
+func (c MySQLConfig) DSN() string {
+	value := mysql.NewConfig()
+	value.Net = "tcp"
+	value.Addr = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
+	value.DBName, value.User, value.Passwd = c.Database, c.User, c.Password
+	value.ParseTime, value.Loc = true, time.UTC
+	value.Params = map[string]string{"charset": "utf8mb4"}
+	return value.FormatDSN()
+}
+
+// Address 将已校验的服务端口转换为监听所有网卡的地址
+func (c Config) Address() string {
+	return net.JoinHostPort("", strconv.Itoa(c.Port))
 }
 
 // Load 根据启动参数加载配置，未指定参数时使用 production 模式
@@ -95,21 +122,35 @@ func Load(args ...string) (Config, error) {
 		return Config{}, err
 	}
 	aiModel := envOr("SHIFTORY_AI_MODEL", fileValues, "")
-	aiAPIKey := envOr("SHIFTORY_AI_API_KEY", fileValues, "")
+	aiAPIKey := secretOr("SHIFTORY_AI_API_KEY", fileValues, "")
 	aiEnabled, err := boolOr("SHIFTORY_AI_ENABLED", fileValues, false)
+	if err != nil {
+		return Config{}, err
+	}
+	port, err := portOr("SHIFTORY_SERVER_PORT", fileValues, 8080)
+	if err != nil {
+		return Config{}, err
+	}
+	mysqlPort, err := portOr("SHIFTORY_MYSQL_PORT", fileValues, 3306)
 	if err != nil {
 		return Config{}, err
 	}
 	// 把已校验的参数与按优先级解析的字符串组装为统一启动配置
 	cfg := Config{
-		Environment:          environment,
-		LogLevel:             logLevel,
-		LogFormat:            logFormat,
-		HTTPAddr:             envOr("SHIFTORY_HTTP_ADDR", fileValues, ":8080"),
-		DatabaseDSN:          envOr("SHIFTORY_DATABASE_DSN", fileValues, "root:123456@tcp(127.0.0.1:3306)/shiftory?charset=utf8mb4&parseTime=true&loc=UTC"),
-		UploadDir:            envOr("SHIFTORY_UPLOAD_DIR", fileValues, "./uploads"),
-		WebDir:               envOr("SHIFTORY_WEB_DIR", fileValues, "../shiftory-web/dist"),
-		PublicOrigin:         envOr("SHIFTORY_PUBLIC_ORIGIN", fileValues, "http://localhost:5173"),
+		Environment: environment,
+		LogLevel:    logLevel,
+		LogFormat:   logFormat,
+		Port:        port,
+		MySQL: MySQLConfig{
+			Host:     envOr("SHIFTORY_MYSQL_HOST", fileValues, "127.0.0.1"),
+			Port:     mysqlPort,
+			Database: envOr("SHIFTORY_MYSQL_DATABASE", fileValues, "shiftory"),
+			User:     envOr("SHIFTORY_MYSQL_USER", fileValues, "root"),
+			Password: secretOr("SHIFTORY_MYSQL_PASSWORD", fileValues, "123456"),
+		},
+		UploadDir:            envOr("SHIFTORY_STORAGE_UPLOAD_DIR", fileValues, "./uploads"),
+		WebDir:               envOr("SHIFTORY_SERVER_WEB_DIR", fileValues, "../shiftory-web/dist"),
+		PublicOrigin:         envOr("SHIFTORY_SERVER_PUBLIC_ORIGIN", fileValues, "http://localhost:5173"),
 		JWTIssuer:            envOr("SHIFTORY_JWT_ISSUER", fileValues, "shiftory-local"),
 		JWTAudience:          envOr("SHIFTORY_JWT_AUDIENCE", fileValues, "shiftory-web"),
 		JWTPrivateKey:        envOr("SHIFTORY_JWT_PRIVATE_KEY_FILE", fileValues, "./var/jwt-private.pem"),
@@ -129,7 +170,7 @@ func Load(args ...string) (Config, error) {
 	// 公开来源必须是无路径的 HTTP 或 HTTPS 地址，用于来源及 Cookie 策略
 	origin, err := url.Parse(cfg.PublicOrigin)
 	if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
-		return Config{}, fmt.Errorf("invalid SHIFTORY_PUBLIC_ORIGIN %q", cfg.PublicOrigin)
+		return Config{}, fmt.Errorf("invalid SHIFTORY_SERVER_PUBLIC_ORIGIN %q", cfg.PublicOrigin)
 	}
 	return cfg, nil
 }
@@ -153,6 +194,29 @@ func envOr(name string, fileValues map[string]string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// secretOr 保留密钥中的空白字符，YAML 中显式空字符串可表示无密码
+func secretOr(name string, fileValues map[string]string, fallback string) string {
+	if value := os.Getenv(name); strings.TrimSpace(value) != "" {
+		return value
+	}
+	if value, ok := fileValues[name]; ok {
+		return value
+	}
+	return fallback
+}
+
+// portOr 读取 TCP 端口并限制在有效端口范围内
+func portOr(name string, fileValues map[string]string, fallback int) (int, error) {
+	value, err := positiveIntOr(name, fileValues, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if value > 65535 {
+		return 0, fmt.Errorf("invalid %s: expected a port from 1 to 65535", name)
+	}
+	return value, nil
 }
 
 // durationOr 读取带单位的正时间间隔，空配置使用默认值
@@ -196,11 +260,16 @@ func boolOr(name string, fileValues map[string]string, fallback bool) (bool, err
 
 // yamlKeys 明确列出可用的 YAML 键，未知键必须报错，避免拼写错误静默回退到默认值
 var yamlKeys = []string{
-	"log_level", "log_format", "http_addr", "database_dsn", "upload_dir",
-	"web_dir", "public_origin", "jwt_issuer", "jwt_audience",
-	"jwt_private_key_file", "jwt_public_key_file", "ai_model", "ai_base_url",
-	"ai_api_key", "ai_enabled", "ai_request_timeout", "worker_id",
-	"worker_lease", "worker_poll_interval", "worker_max_concurrency",
+	"log.level", "log.format", "server.port", "server.web_dir", "server.public_origin",
+	"mysql.host", "mysql.port", "mysql.database", "mysql.user", "mysql.password",
+	"storage.upload_dir", "jwt.issuer", "jwt.audience", "jwt.private_key_file", "jwt.public_key_file",
+	"ai.model", "ai.base_url", "ai.api_key", "ai.enabled", "ai.request_timeout",
+	"worker.id", "worker.lease", "worker.poll_interval", "worker.max_concurrency",
+}
+
+// environmentKey 将 YAML 字段路径转换为带应用前缀的分组环境变量名称
+func environmentKey(path string) string {
+	return "SHIFTORY_" + strings.ToUpper(strings.ReplaceAll(path, ".", "_"))
 }
 
 // loadYAMLFile 加载显式文件或逐级发现首个模式配置，未发现时返回空映射
@@ -229,7 +298,7 @@ func loadYAMLFile(environment, explicit string) (map[string]string, error) {
 	return map[string]string{}, nil
 }
 
-// parseYAMLFile 解析单文档标量映射，校验允许的键并转换为环境变量名称
+// parseYAMLFile 解析单文档分组映射，校验允许的键并转换为环境变量名称
 func parseYAMLFile(path string) (map[string]string, error) {
 	extension := strings.ToLower(filepath.Ext(path))
 	if extension != ".yaml" && extension != ".yml" {
@@ -241,10 +310,10 @@ func parseYAMLFile(path string) (map[string]string, error) {
 	}
 	defer file.Close()
 	decoder := yaml.NewDecoder(file)
-	var values map[string]string
+	var values map[string]map[string]*string
 	if err := decoder.Decode(&values); err != nil || values == nil {
 		// 解码器错误可能包含带凭据的原文片段，因此这里只返回固定错误信息
-		return nil, fmt.Errorf("invalid YAML configuration %s: expected a single mapping of scalar values", path)
+		return nil, fmt.Errorf("invalid YAML configuration %s: expected a single mapping of configuration groups", path)
 	}
 	// 只接受单份 YAML 文档，避免多文档内容被静默忽略
 	var extra any
@@ -257,11 +326,27 @@ func parseYAMLFile(path string) (map[string]string, error) {
 		allowed[key] = true
 	}
 	result := make(map[string]string, len(values))
-	for key, value := range values {
-		if !allowed[key] {
-			return nil, fmt.Errorf("unknown YAML configuration key %q in %s", key, path)
+	for group, fields := range values {
+		knownGroup := false
+		for _, key := range yamlKeys {
+			if strings.HasPrefix(key, group+".") {
+				knownGroup = true
+				break
+			}
 		}
-		result["SHIFTORY_"+strings.ToUpper(key)] = value
+		if !knownGroup || fields == nil {
+			return nil, fmt.Errorf("invalid YAML configuration group %q in %s", group, path)
+		}
+		for field, value := range fields {
+			key := group + "." + field
+			if !allowed[key] {
+				return nil, fmt.Errorf("unknown YAML configuration key %q in %s", key, path)
+			}
+			if value == nil {
+				return nil, fmt.Errorf("null YAML configuration value %q in %s", key, path)
+			}
+			result[environmentKey(key)] = *value
+		}
 	}
 	return result, nil
 }

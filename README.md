@@ -29,7 +29,9 @@ Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录
 | `--env development` | 开发模式 |
 | `--config /path/to/config.yaml` | 显式指定 YAML 文件；不改变 `--env` 选择的模式 |
 
-后端配置优先级为：**非空进程环境变量 > 所选 YAML > 内置默认值**。YAML 使用平铺的小写键，环境变量为同名键大写后添加 `SHIFTORY_` 前缀，例如 `database_dsn` 对应 `SHIFTORY_DATABASE_DSN`、`ai_enabled` 对应 `SHIFTORY_AI_ENABLED`。空白环境变量沿用文件值；布尔值 `false` 可正常覆盖 `true`。可配置项列在 `config/development.example.yaml` 和 `config/production.example.yaml` 中。
+后端配置优先级为：**非空进程环境变量 > 所选 YAML > 内置默认值**。YAML 使用 `log`、`server`、`mysql`、`jwt`、`ai`、`storage`、`worker` 分组，环境变量按 `SHIFTORY_<分组>_<字段>` 命名，例如 `ai.model` 对应 `SHIFTORY_AI_MODEL`、`server.port` 对应 `SHIFTORY_SERVER_PORT`。空白环境变量沿用文件值；布尔值 `false` 可正常覆盖 `true`。密钥和数据库密码保留原始空白，YAML 中显式空密码表示无密码。可配置项列在 `config/development.example.yaml` 和 `config/production.example.yaml` 中。
+
+MySQL 使用 `mysql.host`（IP 或主机名）、`mysql.port`、`mysql.database`、`mysql.user`、`mysql.password`，对应 `SHIFTORY_MYSQL_HOST`、`SHIFTORY_MYSQL_PORT`、`SHIFTORY_MYSQL_DATABASE`、`SHIFTORY_MYSQL_USER`、`SHIFTORY_MYSQL_PASSWORD`。程序统一生成连接串，固定 `utf8mb4`、时间解析与 UTC 时区，不接受运行时 DSN、字符集或时区配置。`server.port` 是监听所有网卡的端口；服务与数据库端口范围均为 1–65535。旧平铺 YAML 会报错，旧 `SHIFTORY_HTTP_ADDR`、`SHIFTORY_DATABASE_DSN`、`SHIFTORY_WEB_DIR`、`SHIFTORY_UPLOAD_DIR`、`SHIFTORY_PUBLIC_ORIGIN` 不再读取。
 
 未指定 `--config` 时，程序依次查找当前工作目录、父目录和祖父目录下的 `config/<模式>.yaml`，只加载首个命中文件，不合并其他文件。未发现文件时允许使用环境变量和内置默认值；显式路径不存在、YAML 格式错误、未知键或非法配置值会直接报错。YAML 中的相对文件路径仍相对于**进程工作目录**，生产部署建议全部使用绝对路径。后端不再读取任何 env 文件，`SHIFTORY_ENV` 和 `SHIFTORY_ENV_FILE` 不再生效。
 
@@ -53,7 +55,7 @@ Copy-Item config/production.example.yaml config/production.yaml
 
 运行配置默认不会自动显示在 Services 中。按 `Alt+8` 打开 Services，依次选择 **Add Service > Run Configuration**，加入 `Go Application`、`npm` 和 `Compound` 类型；其中 `npm` 节点就是前端 pnpm 服务。
 
-前端配置使用 GoLand 的项目级包管理器。若启动日志实际调用的不是 pnpm，请在 **Settings > Languages & Frameworks > JavaScript Runtime > Package manager** 中选择项目的 pnpm 或 Corepack，然后重新运行。开发启动脚本向后端显式传入开发模式和 YAML 路径；要在 API 内启用图片 Worker，请设置 YAML 的 `ai_enabled: true`，或进程环境变量 `SHIFTORY_AI_ENABLED=true`。
+前端配置使用 GoLand 的项目级包管理器。若启动日志实际调用的不是 pnpm，请在 **Settings > Languages & Frameworks > JavaScript Runtime > Package manager** 中选择项目的 pnpm 或 Corepack，然后重新运行。开发启动脚本向后端显式传入开发模式和 YAML 路径；要在 API 内启用图片 Worker，请设置 YAML 的 `ai.enabled: true`（在 `ai` 分组中设置 `enabled`），或进程环境变量 `SHIFTORY_AI_ENABLED=true`。
 
 ### 一键开发启动
 
@@ -104,11 +106,11 @@ pnpm install
 pnpm dev
 ```
 
-开发模式下浏览器访问 `http://localhost:5173`，Vite 会把 `/api` 代理至 `http://127.0.0.1:8080`。执行 `pnpm build-only` 后，后端也可以通过 `SHIFTORY_WEB_DIR=../shiftory-web/dist` 同域提供前端静态资源。
+开发模式下浏览器访问 `http://localhost:5173`，Vite 会把 `/api` 代理至 `http://127.0.0.1:8080`。执行 `pnpm build-only` 后，后端也可以通过 `SHIFTORY_SERVER_WEB_DIR=../shiftory-web/dist` 同域提供前端静态资源。
 
 ### Linux 单机部署
 
-Linux 单机只需要运行 API 二进制，图片 AI Worker 会在同一进程内启动。将生产 YAML 放到 `/etc/shiftory/production.yaml`，通过 `--config` 指定其绝对路径；`SHIFTORY_UPLOAD_DIR`、`SHIFTORY_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
+Linux 单机只需要运行 API 二进制，图片 AI Worker 会在同一进程内启动。将生产 YAML 放到 `/etc/shiftory/production.yaml`，通过 `--config` 指定其绝对路径；`SHIFTORY_STORAGE_UPLOAD_DIR`、`SHIFTORY_SERVER_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
 
 ```bash
 ./scripts/start-linux.sh build

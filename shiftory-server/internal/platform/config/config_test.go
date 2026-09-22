@@ -8,17 +8,23 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // clearConfigEnvironment 清理测试涉及的进程配置变量，并由测试框架恢复原值
 func clearConfigEnvironment(t *testing.T) {
 	t.Helper()
+	for _, key := range yamlKeys {
+		t.Setenv(environmentKey(key), "")
+	}
 	for _, name := range []string{
 		"SHIFTORY_ENV_FILE",
 		"SHIFTORY_ENV",
 		"SHIFTORY_LOG_LEVEL",
 		"SHIFTORY_LOG_FORMAT",
-		"SHIFTORY_HTTP_ADDR",
+		"SHIFTORY_SERVER_PORT",
 		"SHIFTORY_DATABASE_DSN",
 		"SHIFTORY_UPLOAD_DIR",
 		"SHIFTORY_WEB_DIR",
@@ -65,15 +71,15 @@ func TestLoadProfiles(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearConfigEnvironment(t)
 			t.Chdir(t.TempDir())
-			writeConfig(t, "config/production.yaml", "http_addr: ':8081'\n")
-			writeConfig(t, "config/development.yaml", "http_addr: ':9091'\n")
+			writeConfig(t, "config/production.yaml", "server:\n  port: 8081\n")
+			writeConfig(t, "config/development.yaml", "server:\n  port: 9091\n")
 			// 模式只能由启动参数选择，SHIFTORY_ENV 不得覆盖参数或默认值
 			t.Setenv("SHIFTORY_ENV", "development")
 			cfg, err := Load(tc.args...)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Environment != tc.environment || cfg.LogLevel != tc.level || cfg.LogFormat != tc.format || cfg.HTTPAddr != tc.addr {
+			if cfg.Environment != tc.environment || cfg.LogLevel != tc.level || cfg.LogFormat != tc.format || cfg.Address() != tc.addr {
 				t.Fatalf("unexpected profile: %+v", cfg)
 			}
 		})
@@ -85,18 +91,18 @@ func TestLoadDefaultsAndIgnoresEnvFiles(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Chdir(t.TempDir())
 	for _, name := range []string{".env", ".env.local", ".env.production", ".env.development", "shiftory.env"} {
-		writeConfig(t, name, "SHIFTORY_HTTP_ADDR=:9191\nSHIFTORY_LOG_LEVEL=debug\n")
+		writeConfig(t, name, "SHIFTORY_SERVER_PORT=9191\nSHIFTORY_LOG_LEVEL=debug\n")
 	}
 	t.Setenv("SHIFTORY_ENV_FILE", "shiftory.env")
-	writeConfig(t, "config/development.yaml", "http_addr: ':9091'\n")
+	writeConfig(t, "config/development.yaml", "server:\n  port: 9091\n")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Environment != "production" || cfg.HTTPAddr != ":8080" || cfg.LogLevel != "info" || cfg.LogFormat != "json" || cfg.AIEnabled {
+	if cfg.Environment != "production" || cfg.Address() != ":8080" || cfg.LogLevel != "info" || cfg.LogFormat != "json" || cfg.AIEnabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.DatabaseDSN == "" || cfg.UploadDir == "" {
+	if cfg.MySQL.DSN() == "" || cfg.UploadDir == "" {
 		t.Fatal("required defaults missing")
 	}
 }
@@ -107,7 +113,7 @@ func TestLoadFindsNearestProfile(t *testing.T) {
 		t.Run(string(rune('0'+depth)), func(t *testing.T) {
 			clearConfigEnvironment(t)
 			root := t.TempDir()
-			writeConfig(t, filepath.Join(root, "config/development.yaml"), "http_addr: ':9292'\n")
+			writeConfig(t, filepath.Join(root, "config/development.yaml"), "server:\n  port: 9292\n")
 			cwd := root
 			for i := 0; i < depth; i++ {
 				cwd = filepath.Join(cwd, "nested")
@@ -120,16 +126,16 @@ func TestLoadFindsNearestProfile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.HTTPAddr != ":9292" {
-				t.Fatalf("profile not found: %q", cfg.HTTPAddr)
+			if cfg.Address() != ":9292" {
+				t.Fatalf("profile not found: %q", cfg.Address())
 			}
-			writeConfig(t, "config/development.yaml", "http_addr: ':9393'\n")
+			writeConfig(t, "config/development.yaml", "server:\n  port: 9393\n")
 			cfg, err = Load("--env", "development")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.HTTPAddr != ":9393" {
-				t.Fatalf("nearest profile not selected: %q", cfg.HTTPAddr)
+			if cfg.Address() != ":9393" {
+				t.Fatalf("nearest profile not selected: %q", cfg.Address())
 			}
 		})
 	}
@@ -139,37 +145,48 @@ func TestLoadFindsNearestProfile(t *testing.T) {
 func TestLoadExplicitYAMLAndEnvironmentOverrides(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Chdir(t.TempDir())
-	content := `log_level: warn
-log_format: text
-http_addr: ':9090'
-database_dsn: 'user:password@tcp(localhost:3306)/test'
-upload_dir: ./data/uploads
-web_dir: ./web
-public_origin: https://from-file.example
-jwt_issuer: test-issuer
-jwt_audience: test-audience
-jwt_private_key_file: ./keys/private.pem
-jwt_public_key_file: ./keys/public.pem
-ai_model: vision-test
-ai_base_url: https://ai.example/v1
-ai_api_key: test-key
-ai_enabled: true
-ai_request_timeout: 45s
-worker_id: test-worker
-worker_poll_interval: 7s
-worker_lease: 3m
-worker_max_concurrency: 4
+	content := `log:
+  level: warn
+  format: text
+server:
+  port: 9090
+  web_dir: ./web
+  public_origin: https://from-file.example
+mysql:
+  host: localhost
+  port: 3306
+  database: test
+  user: user
+  password: password
+storage:
+  upload_dir: ./data/uploads
+jwt:
+  issuer: test-issuer
+  audience: test-audience
+  private_key_file: ./keys/private.pem
+  public_key_file: ./keys/public.pem
+ai:
+  model: vision-test
+  base_url: https://ai.example/v1
+  api_key: test-key
+  enabled: true
+  request_timeout: 45s
+worker:
+  id: test-worker
+  poll_interval: 7s
+  lease: 3m
+  max_concurrency: 4
 `
 	writeConfig(t, "selected config.yml", content)
-	writeConfig(t, "config/production.yaml", "http_addr: ':9191'\n")
+	writeConfig(t, "config/production.yaml", "server:\n  port: 9191\n")
 	cfg, err := Load("--config", "selected config.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Environment != "production" || cfg.LogLevel != "warn" || cfg.LogFormat != "text" || cfg.HTTPAddr != ":9090" || cfg.DatabaseDSN != "user:password@tcp(localhost:3306)/test" || cfg.UploadDir != "./data/uploads" || cfg.WebDir != "./web" || cfg.PublicOrigin != "https://from-file.example" || cfg.JWTIssuer != "test-issuer" || cfg.JWTAudience != "test-audience" || cfg.JWTPrivateKey != "./keys/private.pem" || cfg.JWTPublicKey != "./keys/public.pem" || cfg.AIModel != "vision-test" || cfg.AIBaseURL != "https://ai.example/v1" || cfg.AIAPIKey != "test-key" || !cfg.AIEnabled || cfg.AIRequestTimeout.String() != "45s" || cfg.WorkerID != "test-worker" || cfg.WorkerPollPeriod.String() != "7s" || cfg.WorkerLease.String() != "3m0s" || cfg.WorkerMaxConcurrency != 4 {
+	if cfg.Environment != "production" || cfg.LogLevel != "warn" || cfg.LogFormat != "text" || cfg.Address() != ":9090" || cfg.MySQL.Database != "test" || cfg.MySQL.User != "user" || cfg.MySQL.Password != "password" || cfg.UploadDir != "./data/uploads" || cfg.WebDir != "./web" || cfg.PublicOrigin != "https://from-file.example" || cfg.JWTIssuer != "test-issuer" || cfg.JWTAudience != "test-audience" || cfg.JWTPrivateKey != "./keys/private.pem" || cfg.JWTPublicKey != "./keys/public.pem" || cfg.AIModel != "vision-test" || cfg.AIBaseURL != "https://ai.example/v1" || cfg.AIAPIKey != "test-key" || !cfg.AIEnabled || cfg.AIRequestTimeout.String() != "45s" || cfg.WorkerID != "test-worker" || cfg.WorkerPollPeriod.String() != "7s" || cfg.WorkerLease.String() != "3m0s" || cfg.WorkerMaxConcurrency != 4 {
 		t.Fatalf("YAML values were not loaded: %+v", cfg)
 	}
-	if os.Getenv("SHIFTORY_HTTP_ADDR") != "" {
+	if os.Getenv("SHIFTORY_SERVER_PORT") != "" {
 		t.Fatal("loading mutated process environment")
 	}
 	values, err := parseYAMLFile("selected config.yml")
@@ -187,7 +204,7 @@ worker_max_concurrency: 4
 	if !reflect.DeepEqual(cfg, fromEnv) {
 		t.Fatal("environment and YAML settings differ")
 	}
-	t.Setenv("SHIFTORY_HTTP_ADDR", ":7070")
+	t.Setenv("SHIFTORY_SERVER_PORT", "7070")
 	t.Setenv("SHIFTORY_AI_ENABLED", "false")
 	t.Setenv("SHIFTORY_WORKER_MAX_CONCURRENCY", "6")
 	t.Setenv("SHIFTORY_WORKER_LEASE", "4m")
@@ -195,15 +212,15 @@ worker_max_concurrency: 4
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":7070" || cfg.AIEnabled || cfg.WorkerMaxConcurrency != 6 || cfg.WorkerLease.String() != "4m0s" {
+	if cfg.Address() != ":7070" || cfg.AIEnabled || cfg.WorkerMaxConcurrency != 6 || cfg.WorkerLease.String() != "4m0s" {
 		t.Fatalf("environment did not override YAML: %+v", cfg)
 	}
-	t.Setenv("SHIFTORY_HTTP_ADDR", "  ")
+	t.Setenv("SHIFTORY_SERVER_PORT", "  ")
 	cfg, err = Load("--config", "selected config.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":9090" {
+	if cfg.Address() != ":9090" {
 		t.Fatal("empty environment should fall back to YAML")
 	}
 }
@@ -228,9 +245,9 @@ func TestLoadRejectsInvalidArguments(t *testing.T) {
 // TestLoadRejectsInvalidYAML 验证非法 YAML、未知字段和不支持的文件形式被拒绝
 func TestLoadRejectsInvalidYAML(t *testing.T) {
 	for _, content := range []string{
-		"http_addr: [", "http_addr: ':8080'\nhttp_addr: ':9090'\n", "unknown: value\n",
+		"server: {port: [}", "server: {port: 8080, port: 9090}", "mysql: {dsn: secret}", "mysql: {charset: utf8}", "server: null", "mysql: {password: null}", "server: {unknown: value}", "http_addr: [", "server:\n  port: 8080\nserver:\n  port: 9090\n", "unknown: value\n",
 		"http_addr: [a, b]\n", "http_addr: {nested: value}\n", "- value\n", "null\n", "",
-		"http_addr: ':8080'\n---\nhttp_addr: ':9090'\n", "env: development\n",
+		"server:\n  port: 8080\n---\nserver:\n  port: 9090\n", "env: development\n",
 	} {
 		t.Run(content, func(t *testing.T) {
 			clearConfigEnvironment(t)
@@ -250,18 +267,18 @@ func TestLoadRejectsInvalidYAML(t *testing.T) {
 // TestLoadRejectsInvalidSettings 验证无效日志、时间、并发与来源设置被拒绝
 func TestLoadRejectsInvalidSettings(t *testing.T) {
 	for _, tc := range []struct{ key, value string }{
-		{"log_level", "verbose"}, {"log_format", "xml"}, {"public_origin", "not-a-url"},
-		{"worker_max_concurrency", "0"}, {"worker_max_concurrency", "-1"}, {"worker_max_concurrency", "1.5"},
-		{"worker_lease", "0s"}, {"worker_poll_interval", "-1s"}, {"ai_request_timeout", "oops"}, {"ai_enabled", "maybe"},
+		{"server.port", "0"}, {"server.port", "65536"}, {"mysql.port", "-1"}, {"mysql.port", "1.5"}, {"log.level", "verbose"}, {"log.format", "xml"}, {"server.public_origin", "not-a-url"},
+		{"worker.max_concurrency", "0"}, {"worker.max_concurrency", "-1"}, {"worker.max_concurrency", "1.5"},
+		{"worker.lease", "0s"}, {"worker.poll_interval", "-1s"}, {"ai.request_timeout", "oops"}, {"ai.enabled", "maybe"},
 	} {
 		t.Run(tc.key+tc.value, func(t *testing.T) {
 			clearConfigEnvironment(t)
 			t.Chdir(t.TempDir())
-			writeConfig(t, "invalid.yaml", tc.key+": '"+tc.value+"'\n")
+			writeConfig(t, "invalid.yaml", strings.Replace(tc.key, ".", ":\n  ", 1)+": '"+tc.value+"'\n")
 			if _, err := Load("--config", "invalid.yaml"); err == nil {
 				t.Fatal("invalid YAML setting accepted")
 			}
-			t.Setenv("SHIFTORY_"+strings.ToUpper(tc.key), tc.value)
+			t.Setenv(environmentKey(tc.key), tc.value)
 			if _, err := Load(); err == nil {
 				t.Fatal("invalid environment setting accepted")
 			}
@@ -288,5 +305,49 @@ func TestDistributedYAMLExamples(t *testing.T) {
 		if cfg.Environment != environment || cfg.AIEnabled || cfg.AIAPIKey != "" {
 			t.Fatalf("%s has unexpected profile or AI defaults", path)
 		}
+	}
+}
+
+// TestMySQLConnectionParameters 验证数据库连接编码保留特殊字符并固定时间与字符集选项
+func TestMySQLConnectionParameters(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Chdir(t.TempDir())
+	writeConfig(t, "db.yaml", "mysql:\n  host: '::1'\n  port: 3307\n  database: 'test/name'\n  user: demo\n  password: ' p@ss:/?# word '\n")
+	cfg, err := Load("--config", "db.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := mysql.ParseDSN(cfg.MySQL.DSN())
+	if err != nil {
+		t.Fatal("generated DSN cannot be parsed")
+	}
+	if parsed.Addr != "[::1]:3307" || parsed.DBName != "test/name" || parsed.User != "demo" || parsed.Passwd != " p@ss:/?# word " {
+		t.Fatal("connection parameters changed during encoding")
+	}
+	if !parsed.ParseTime || parsed.Loc != time.UTC || !strings.Contains(cfg.MySQL.DSN(), "charset=utf8mb4") {
+		t.Fatal("fixed connection options missing")
+	}
+	t.Setenv("SHIFTORY_MYSQL_PASSWORD", " env-secret ")
+	cfg, err = Load("--config", "db.yaml")
+	if err != nil || cfg.MySQL.Password != " env-secret " {
+		t.Fatal("environment password was not preserved")
+	}
+	t.Setenv("SHIFTORY_MYSQL_PASSWORD", "")
+	writeConfig(t, "db.yaml", "mysql:\n  password: ''\n")
+	cfg, err = Load("--config", "db.yaml")
+	if err != nil || cfg.MySQL.Password != "" {
+		t.Fatal("explicit empty YAML password was not preserved")
+	}
+}
+
+// TestLegacyEnvironmentIgnored 验证旧地址和 DSN 环境变量不会绕过分组参数
+func TestLegacyEnvironmentIgnored(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Chdir(t.TempDir())
+	t.Setenv("SHIFTORY_HTTP_ADDR", ":1234")
+	t.Setenv("SHIFTORY_DATABASE_DSN", "invalid-legacy-dsn")
+	cfg, err := Load()
+	if err != nil || cfg.Port != 8080 || cfg.MySQL.Host != "127.0.0.1" {
+		t.Fatal("legacy environment affected configuration")
 	}
 }

@@ -28,6 +28,7 @@
 ## 配置、日志与部署
 
 - API 与 migrate 共用 `--env` 和 `--config`，默认生产模式；非空进程环境变量优先于 YAML，其次使用内置默认值。后端不加载 env 文件，前端继续使用 Vite 的 `.env*` 与 `VITE_*`。
+- 后端 YAML 按 log、server、mysql、jwt、ai、storage、worker 分组，环境变量采用 SHIFTORY_<分组>_<字段>。server.port 指定监听端口；mysql 使用 host、port、database、user、password，连接串由驱动生成，字符集固定 utf8mb4，时间解析使用 UTC。不接受运行时 DSN 或平铺 YAML 键。
 - 未显式指定配置时，按工作目录、父目录、祖父目录查找首个 `config/<模式>.yaml`；文件不合并。显式路径缺失、非法 YAML、未知键或非法值会报错。相对路径以进程工作目录为基准。
 - 样例配置只保存可分发值；实际 YAML、JWT 私钥、模型密钥与上传文件不能进入版本控制。生产部署需要持久化上传目录与 JWT 密钥。
 - 开发日志默认 `debug` 与文本格式，生产默认 `info` 与 JSON；支持显式覆盖。请求日志包含请求 ID、路径、状态和耗时，不记录令牌、API Key 或图片内容。

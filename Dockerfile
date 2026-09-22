@@ -21,7 +21,7 @@ COPY --from=web-build /src/shiftory-web/dist /app/web
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 COPY config/production.example.yaml /app/config/production.yaml
 RUN mkdir -p /app/var /app/uploads
-ENV SHIFTORY_HTTP_ADDR=:8080 SHIFTORY_WEB_DIR=/app/web SHIFTORY_UPLOAD_DIR=/app/uploads SHIFTORY_JWT_PRIVATE_KEY_FILE=/app/var/jwt-private.pem SHIFTORY_JWT_PUBLIC_KEY_FILE=/app/var/jwt-public.pem
+ENV SHIFTORY_SERVER_PORT=8080 SHIFTORY_SERVER_WEB_DIR=/app/web SHIFTORY_STORAGE_UPLOAD_DIR=/app/uploads SHIFTORY_JWT_PRIVATE_KEY_FILE=/app/var/jwt-private.pem SHIFTORY_JWT_PUBLIC_KEY_FILE=/app/var/jwt-public.pem
 EXPOSE 8080
 VOLUME ["/app/uploads", "/app/var"]
 RUN chmod +x /app/docker-entrypoint.sh

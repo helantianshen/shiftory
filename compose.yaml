@@ -6,8 +6,12 @@ services:
     depends_on:
       mysql: { condition: service_healthy }
     environment:
-      SHIFTORY_DATABASE_DSN: root:${MYSQL_ROOT_PASSWORD:-change-me}@tcp(mysql:3306)/${MYSQL_DATABASE:-shiftory}?charset=utf8mb4&parseTime=true&loc=UTC
-      SHIFTORY_PUBLIC_ORIGIN:
+      SHIFTORY_MYSQL_HOST: mysql
+      SHIFTORY_MYSQL_PORT: "3306"
+      SHIFTORY_MYSQL_DATABASE: ${MYSQL_DATABASE:-shiftory}
+      SHIFTORY_MYSQL_USER: root
+      SHIFTORY_MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      SHIFTORY_SERVER_PUBLIC_ORIGIN:
       SHIFTORY_LOG_LEVEL:
       SHIFTORY_LOG_FORMAT:
       SHIFTORY_AI_ENABLED:

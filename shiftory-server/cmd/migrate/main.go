@@ -21,7 +21,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	db, err := database.Open(context.Background(), cfg.DatabaseDSN)
+	db, err := database.Open(context.Background(), cfg.MySQL.DSN())
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -37,11 +37,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	logger.Info("configuration loaded", "environment", cfg.Environment, "log_level", cfg.LogLevel, "log_format", cfg.LogFormat, "http_addr", cfg.HTTPAddr, "ai_enabled", cfg.AIEnabled)
+	logger.Info("configuration loaded", "environment", cfg.Environment, "log_level", cfg.LogLevel, "log_format", cfg.LogFormat, "http_addr", cfg.Address(), "ai_enabled", cfg.AIEnabled)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// 建立数据库、上传目录和持久化签名密钥，依赖失败时不开放 HTTP 服务
-	db, err := database.Open(ctx, cfg.DatabaseDSN)
+	db, err := database.Open(ctx, cfg.MySQL.DSN())
 	if err != nil {
 		logger.Error("database connection failed", "error", err)
 		log.Fatal(err)
@@ -87,7 +87,7 @@ func main() {
 		logger.Error("HTTP handler initialization failed", "error", err)
 		log.Fatal(err)
 	}
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
+	server := &http.Server{Addr: cfg.Address(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
 	if runner != nil {
 		go func() {
 			if err := runner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -97,7 +97,7 @@ func main() {
 	}
 	// HTTP 监听在后台运行，异常退出会取消共享上下文以触发停机
 	go func() {
-		logger.Info("Shiftory API listening", "http_addr", cfg.HTTPAddr)
+		logger.Info("Shiftory API listening", "http_addr", cfg.Address())
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("API server stopped unexpectedly", "error", err)
 			stop()
