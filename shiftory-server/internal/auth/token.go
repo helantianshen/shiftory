@@ -65,31 +65,40 @@ func (m *TokenManager) IssuePair(userID uint64, familyID string, now time.Time) 
 	accessExpiry, refreshExpiry := now.Add(m.accessTTL), now.Add(m.refreshTTL)
 	// NotBefore 向前容忍五秒，用于吸收签发端与校验端的轻微时钟偏差
 	access, err := m.sign(Claims{
-		UserID: userID,
-		Type:   TokenTypeAccess,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: m.issuer, Subject: strconv.FormatUint(userID, 10), Audience: jwt.ClaimStrings{m.audience},
-			ExpiresAt: jwt.NewNumericDate(accessExpiry), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)),
-			IssuedAt: jwt.NewNumericDate(now), ID: accessID,
-		},
+		UserID:    userID,
+		Type:      TokenTypeAccess,
+		Issuer:    m.issuer,
+		Subject:   strconv.FormatUint(userID, 10),
+		Audience:  jwt.ClaimStrings{m.audience},
+		ExpiresAt: jwt.NewNumericDate(accessExpiry),
+		NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)),
+		IssuedAt:  jwt.NewNumericDate(now), ID: accessID,
 	})
 	if err != nil {
 		return TokenPair{}, err
 	}
 	refresh, err := m.sign(Claims{
-		UserID: userID, Type: TokenTypeRefresh, FamilyID: familyID,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: m.issuer, Subject: strconv.FormatUint(userID, 10), Audience: jwt.ClaimStrings{m.audience},
-			ExpiresAt: jwt.NewNumericDate(refreshExpiry), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)),
-			IssuedAt: jwt.NewNumericDate(now), ID: refreshID,
-		},
+		UserID:    userID,
+		Type:      TokenTypeRefresh,
+		FamilyID:  familyID,
+		Issuer:    m.issuer,
+		Subject:   strconv.FormatUint(userID, 10),
+		Audience:  jwt.ClaimStrings{m.audience},
+		ExpiresAt: jwt.NewNumericDate(refreshExpiry),
+		NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)),
+		IssuedAt:  jwt.NewNumericDate(now), ID: refreshID,
 	})
 	if err != nil {
 		return TokenPair{}, err
 	}
 	return TokenPair{
-		AccessToken: access, RefreshToken: refresh, AccessExpiry: accessExpiry, RefreshExpiry: refreshExpiry,
-		AccessJWTID: accessID, RefreshJWTID: refreshID, FamilyID: familyID,
+		AccessToken:   access,
+		RefreshToken:  refresh,
+		AccessExpiry:  accessExpiry,
+		RefreshExpiry: refreshExpiry,
+		AccessJWTID:   accessID,
+		RefreshJWTID:  refreshID,
+		FamilyID:      familyID,
 	}, nil
 }
 
