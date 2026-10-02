@@ -1509,7 +1509,7 @@ UPDATE schedule_days SET status = ?, source_type = ?, source_import_id = ?, note
 		day.Version = 1
 		result, err := tx.ExecContext(ctx, `
 INSERT INTO schedule_days (workspace_id, user_id, work_date, status, source_type, source_import_id, note, version, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`, day.WorkspaceID, day.UserID, day.WorkDate.String(), day.Status, day.SourceType, day.SourceImportID, day.Note, day.CreatedBy)
+VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?, ?, 1, ?)`, day.WorkspaceID, day.UserID, day.WorkDate.String(), day.Status, day.SourceType, day.SourceImportID, day.Note, day.CreatedBy)
 		if err != nil {
 			return schedule.Day{}, err
 		}

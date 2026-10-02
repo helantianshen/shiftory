@@ -42,10 +42,10 @@ func (s *server) getCalendar(c *gin.Context) {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询成员有效期", nil)
 		return
 	}
-	// 未指定成员时按关系与查询区间的交集选择成员，显式选择只校验工作区归属
+	// 未指定成员时包含全部现有成员，历史成员按关系与查询区间的交集纳入
 	if len(memberIDs) == 0 {
 		for _, period := range periods {
-			if period.overlaps(start, end) {
+			if period.Left == nil || period.overlaps(start, end) {
 				memberIDs = append(memberIDs, period.UserID)
 			}
 		}

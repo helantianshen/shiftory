@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import dayjs, { type Dayjs } from "dayjs";
 import { ArrowLeft, ArrowRight, Users } from "lucide-vue-next";
@@ -23,16 +23,6 @@ const members = useQuery({
     api.get<{ items: Member[] }>(`/workspaces/${workspaceID.value}/members`),
   enabled: computed(() => Boolean(workspaceID.value)),
 });
-watch(
-  () => members.data.value,
-  (value) => {
-    if (value && !selectedMembers.value.length)
-      selectedMembers.value = value.items
-        .filter((item) => item.status === "ACTIVE")
-        .map((item) => item.id);
-  },
-  { immediate: true },
-);
 const query = useQuery({
   queryKey: computed(() => [
     "calendar",
@@ -42,11 +32,9 @@ const query = useQuery({
   ]),
   queryFn: () =>
     api.get<{ days: CalendarDay[] }>(
-      `/workspaces/${workspaceID.value}/calendar?start=${month.value.startOf("month").format("YYYY-MM-DD")}&end=${month.value.endOf("month").format("YYYY-MM-DD")}&memberIds=${selectedMembers.value.join(",")}`,
+      `/workspaces/${workspaceID.value}/calendar?start=${month.value.startOf("month").format("YYYY-MM-DD")}&end=${month.value.endOf("month").format("YYYY-MM-DD")}${selectedMembers.value.length ? `&memberIds=${selectedMembers.value.join(",")}` : ""}`,
     ),
-  enabled: computed(() =>
-    Boolean(workspaceID.value && selectedMembers.value.length),
-  ),
+  enabled: computed(() => Boolean(workspaceID.value)),
 });
 const days = computed(
   () =>
@@ -85,7 +73,7 @@ function scheduleDetail(member: CalendarMemberDay) {
     <PageHeader
       eyebrow="TEAM CALENDAR"
       title="团队日历"
-      description="成员可查看完整已确认排班；共同休息仅在所选成员全部明确休息且没有缺失时标记。"
+      description="未选择成员时显示全部成员；共同休息仅在查询范围内所有成员明确休息且没有缺失时标记。"
     />
     <div class="toolbar">
       <el-button circle @click="month = month.subtract(1, 'month')"
@@ -99,8 +87,9 @@ function scheduleDetail(member: CalendarMemberDay) {
         v-model="selectedMembers"
         multiple
         collapse-tags
+        clearable
         filterable
-        placeholder="选择成员"
+        placeholder="全部成员（可选择筛选）"
       >
         <el-option
           v-for="member in members.data.value?.items ?? []"

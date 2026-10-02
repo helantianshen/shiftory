@@ -88,7 +88,7 @@ async function downloadTemplate() {
     ><PageHeader
       eyebrow="IMPORT"
       title="导入排班"
-      description="Excel 与截图最终都进入同一套预览和人工确认流程。"
+      description="按当前工作区成员和班次生成预览，确认后写入目标成员的全局排班。"
       ><el-button @click="downloadTemplate"
         >下载 Excel 模板</el-button
       ></PageHeader

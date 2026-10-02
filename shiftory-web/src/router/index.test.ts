@@ -36,3 +36,21 @@ it("keeps the selected workspace when preference persistence fails", async () =>
   await expect(useSessionStore().selectWorkspace(2)).rejects.toThrow("offline");
   expect(useSessionStore().currentWorkspaceId).toBe(1);
 });
+
+it("declares personal pages separately from every workspace page", async () => {
+  for (const path of ["/schedule", "/profile", "/invitations"]) {
+    await router.push(path);
+    expect(router.currentRoute.value.meta.dataScope).toBe("personal");
+  }
+  for (const path of ["/overview", "/calendar", "/import", "/imports", "/imports/20", "/admin/schedules", "/admin/members", "/admin/shifts", "/admin/imports", "/admin/imports/20", "/admin/workspace"]) {
+    await router.push(path);
+    expect(router.currentRoute.value.meta.dataScope).toBe("workspace");
+  }
+});
+
+it("allows personal schedules without a workspace", async () => {
+  useSessionStore().setWorkspaces([]);
+  await router.push("/schedule");
+  expect(router.currentRoute.value.path).toBe("/schedule");
+  expect(router.currentRoute.value.meta.dataScope).toBe("personal");
+});

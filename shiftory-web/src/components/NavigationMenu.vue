@@ -15,13 +15,14 @@ import {
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
-const shared = [
-  { to: "/overview", label: "概览", icon: LayoutDashboard },
+const personal = [
   { to: "/schedule", label: "我的排班", icon: Clock3 },
+  { to: "/profile", label: "个人资料", icon: UserRound },
+];
+const workspace = [
   { to: "/import", label: "导入排班", icon: Import },
   { to: "/calendar", label: "团队日历", icon: CalendarDays },
   { to: "/imports", label: "我的导入记录", icon: FileClock },
-  { to: "/profile", label: "个人资料", icon: UserRound },
 ];
 const administration = [
   { to: "/admin/schedules", label: "排班管理", icon: WandSparkles },
@@ -30,20 +31,21 @@ const administration = [
   { to: "/admin/imports", label: "全部导入记录", icon: FileClock },
   { to: "/admin/workspace", label: "工作区设置", icon: Settings },
 ];
-const menus = computed(() =>
-  session.isAdmin ? [...shared, ...administration] : shared,
-);
+const groups = computed(() => [
+  { label: "个人", items: personal },
+  { label: "工作区", items: session.isAdmin ? [...workspace, ...administration] : workspace },
+]);
 </script>
 <template>
   <nav class="navigation-menu" aria-label="主导航">
-    <RouterLink
-      v-for="item in menus"
-      :key="item.to"
-      :to="item.to"
-      class="navigation-item"
-      ><component :is="item.icon" :size="18" /><span>{{
-        item.label
-      }}</span></RouterLink
-    >
+    <RouterLink to="/overview" class="navigation-item">
+      <LayoutDashboard :size="18" /><span>概览</span>
+    </RouterLink>
+    <section v-for="group in groups" :key="group.label" class="navigation-group" :aria-label="group.label">
+      <h2 class="navigation-group-title">{{ group.label }}</h2>
+      <RouterLink v-for="item in group.items" :key="item.to" :to="item.to" class="navigation-item">
+        <component :is="item.icon" :size="18" /><span>{{ item.label }}</span>
+      </RouterLink>
+    </section>
   </nav>
 </template>

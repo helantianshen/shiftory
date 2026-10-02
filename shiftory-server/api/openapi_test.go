@@ -23,7 +23,7 @@ func TestOpenAPIDocumentIsValidYAMLAndCoversPublicRoutes(t *testing.T) {
 	if document.OpenAPI != "3.1.0" {
 		t.Fatalf("expected OpenAPI 3.1.0, got %q", document.OpenAPI)
 	}
-	if len(document.Paths) != 35 {
-		t.Fatalf("expected all 35 route groups, got %d", len(document.Paths))
+	if len(document.Paths) != 39 {
+		t.Fatalf("expected all 39 route groups, got %d", len(document.Paths))
 	}
 }

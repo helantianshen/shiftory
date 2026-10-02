@@ -20,7 +20,7 @@ const selected = ref<number | undefined>();
   <PageHeader
     eyebrow="ADMINISTRATION"
     title="排班管理"
-    description="代表成员查看、编辑或批量设置排班。"
+    description="管理当前工作区成员的排班；修改会同步到成员的其他工作区。"
     ><el-select v-model="selected" placeholder="选择成员" filterable
       ><el-option
         v-for="member in members.data.value?.items.filter(

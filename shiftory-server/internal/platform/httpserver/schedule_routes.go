@@ -25,32 +25,17 @@ type scheduleSegmentRequest struct {
 
 // scheduleRequest 承载日排班内容和客户端已知版本
 type scheduleRequest struct {
-	Status   schedule.Status          `json:"status" binding:"required"`
-	Note     string                   `json:"note"`
-	Version  uint64                   `json:"version"`
-	Segments []scheduleSegmentRequest `json:"segments"`
+	ShiftWorkspaceID uint64                   `json:"shiftWorkspaceId"`
+	Status           schedule.Status          `json:"status" binding:"required"`
+	Note             string                   `json:"note"`
+	Version          uint64                   `json:"version"`
+	Segments         []scheduleSegmentRequest `json:"segments"`
 }
 
 // upsertSchedule 检查编辑权限、构造领域排班并按客户端版本保存
 func (s *server) upsertSchedule(c *gin.Context) {
-	workspaceID, ok := parseID(c, "workspaceId")
+	workspaceID, targetUserID, ok := s.scheduleContext(c, true)
 	if !ok {
-		return
-	}
-	targetUserID, ok := parseID(c, "userId")
-	if !ok {
-		return
-	}
-	actor, ok := s.requireWorkspaceMember(c, workspaceID)
-	if !ok {
-		return
-	}
-	if actor.UserID != targetUserID && !requireAdmin(actor) {
-		failure(c, http.StatusForbidden, "FORBIDDEN", "不能修改其他成员的排班", nil)
-		return
-	}
-	if !s.userBelongsToWorkspace(workspaceID, targetUserID) {
-		failure(c, http.StatusBadRequest, "INVALID_MEMBER", "目标用户不属于当前工作区", nil)
 		return
 	}
 	date, err := schedule.ParseDate(c.Param("date"))
@@ -62,6 +47,22 @@ func (s *server) upsertSchedule(c *gin.Context) {
 	if err := c.ShouldBindJSON(&request); err != nil {
 		failure(c, http.StatusBadRequest, "INVALID_SCHEDULE", "排班信息不完整", nil)
 		return
+	}
+	// 个人排班只在引用新的预设班次时检查显式来源，日历内容不受工作区筛选
+	if c.Param("workspaceId") == "" {
+		for _, item := range request.Segments {
+			if item.Type == schedule.SegmentShift && item.ExistingSegmentID == nil {
+				if request.ShiftWorkspaceID == 0 {
+					failure(c, http.StatusBadRequest, "INVALID_SHIFT", "请选择预设班次来源工作区", nil)
+					return
+				}
+				if _, ok := s.requireWorkspaceMember(c, request.ShiftWorkspaceID); !ok {
+					return
+				}
+				workspaceID = request.ShiftWorkspaceID
+				break
+			}
+		}
 	}
 	// 复用历史班次必须绑定当前用户和日期，客户端不能自行提交展示快照
 	existingSegments := map[uint64]schedule.Segment{}
@@ -169,7 +170,7 @@ func (s *server) saveSchedule(c *gin.Context, day schedule.Day) (schedule.Day, e
 		}
 		result, err := tx.ExecContext(c.Request.Context(), `
 INSERT INTO schedule_days (workspace_id, user_id, work_date, status, source_type, note, version, created_by)
-VALUES (?, ?, ?, ?, ?, ?, 1, ?)`, day.WorkspaceID, day.UserID, day.WorkDate.String(), day.Status, day.SourceType, day.Note, day.CreatedBy)
+VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?, 1, ?)`, day.WorkspaceID, day.UserID, day.WorkDate.String(), day.Status, day.SourceType, day.Note, day.CreatedBy)
 		if err != nil {
 			return schedule.Day{}, err
 		}
@@ -222,7 +223,7 @@ VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF
 	if _, err := tx.ExecContext(c.Request.Context(), `
 INSERT INTO schedule_revisions
     (schedule_day_id, workspace_id, user_id, work_date, before_version, after_version, before_snapshot, after_snapshot, change_type, changed_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, day.ID, day.WorkspaceID, day.UserID, day.WorkDate.String(), beforeVersion, day.Version, beforeSnapshot, after, changeType, day.CreatedBy); err != nil {
+VALUES (?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, ?)`, day.ID, day.WorkspaceID, day.UserID, day.WorkDate.String(), beforeVersion, day.Version, beforeSnapshot, after, changeType, day.CreatedBy); err != nil {
 		return schedule.Day{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -256,22 +257,18 @@ func (s *server) userBelongsToWorkspace(workspaceID, userID uint64) bool {
 	return count == 1
 }
 
-// listSchedules 在当前工作区鉴权后查询目标用户指定日期范围的排班
+// listSchedules 查询个人全局排班，团队入口按目标成员的日期范围过滤
 func (s *server) listSchedules(c *gin.Context) {
-	workspaceID, ok := parseID(c, "workspaceId")
+	workspaceID, targetUserID, ok := s.scheduleContext(c, false)
 	if !ok {
 		return
 	}
-	targetUserID, ok := parseID(c, "userId")
-	if !ok {
-		return
-	}
-	if _, ok := s.requireWorkspaceMember(c, workspaceID); !ok {
-		return
-	}
-	period, ok := s.requireScheduleReader(c, workspaceID, targetUserID)
-	if !ok {
-		return
+	var period memberPeriod
+	if workspaceID != 0 {
+		period, ok = s.requireScheduleReader(c, workspaceID, targetUserID)
+		if !ok {
+			return
+		}
 	}
 	start, startErr := schedule.ParseDate(c.Query("start"))
 	end, endErr := schedule.ParseDate(c.Query("end"))
@@ -286,7 +283,7 @@ func (s *server) listSchedules(c *gin.Context) {
 	}
 	items := make([]gin.H, 0, len(days))
 	for _, day := range days {
-		if period.contains(day.WorkDate) {
+		if workspaceID == 0 || period.contains(day.WorkDate) {
 			items = append(items, scheduleResponse(day))
 		}
 	}
@@ -408,4 +405,34 @@ func (s *server) requireScheduleReader(c *gin.Context, workspaceID, userID uint6
 	}
 	failure(c, http.StatusForbidden, "FORBIDDEN", "无权查看该用户的排班", nil)
 	return memberPeriod{}, false
+}
+
+// scheduleContext 从认证身份解析个人排班，团队入口另行检查工作区成员与写权限
+func (s *server) scheduleContext(c *gin.Context, write bool) (uint64, uint64, bool) {
+	if c.Param("workspaceId") == "" {
+		return 0, currentUserID(c), true
+	}
+	workspaceID, ok := parseID(c, "workspaceId")
+	if !ok {
+		return 0, 0, false
+	}
+	userID, ok := parseID(c, "userId")
+	if !ok {
+		return 0, 0, false
+	}
+	actor, ok := s.requireWorkspaceMember(c, workspaceID)
+	if !ok {
+		return 0, 0, false
+	}
+	if write {
+		if actor.UserID != userID && !requireAdmin(actor) {
+			failure(c, http.StatusForbidden, "FORBIDDEN", "不能修改其他成员的排班", nil)
+			return 0, 0, false
+		}
+		if !s.userBelongsToWorkspace(workspaceID, userID) {
+			failure(c, http.StatusBadRequest, "INVALID_MEMBER", "目标用户不属于当前工作区", nil)
+			return 0, 0, false
+		}
+	}
+	return workspaceID, userID, true
 }

@@ -231,16 +231,23 @@ WHERE id = ? AND workspace_id = ?`, request.Name, request.Code, start, end, requ
 
 // batchSchedules 逐日校验并保存批量排班，全部日期与修订共用一个事务
 func (s *server) batchSchedules(c *gin.Context) {
-	workspaceID, ok := parseID(c, "workspaceId")
-	if !ok {
-		return
-	}
-	actor, ok := s.requireWorkspaceMember(c, workspaceID)
-	if !ok {
-		return
+	var workspaceID uint64
+	var actor membership
+	if c.Param("workspaceId") != "" {
+		var ok bool
+		workspaceID, ok = parseID(c, "workspaceId")
+		if !ok {
+			return
+		}
+		actor, ok = s.requireWorkspaceMember(c, workspaceID)
+		if !ok {
+			return
+		}
+	} else {
+		actor.UserID = currentUserID(c)
 	}
 	var request struct {
-		UserID   uint64                   `json:"userId" binding:"required"`
+		UserID   uint64                   `json:"userId"`
 		Dates    []string                 `json:"dates" binding:"required"`
 		Status   schedule.Status          `json:"status" binding:"required"`
 		Note     string                   `json:"note"`
@@ -250,11 +257,18 @@ func (s *server) batchSchedules(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_BATCH", "批量排班信息无效", nil)
 		return
 	}
+	if workspaceID == 0 {
+		if request.UserID != 0 && request.UserID != actor.UserID {
+			failure(c, http.StatusForbidden, "FORBIDDEN", "不能修改其他用户的排班", nil)
+			return
+		}
+		request.UserID = actor.UserID
+	}
 	if actor.UserID != request.UserID && !requireAdmin(actor) {
 		failure(c, http.StatusForbidden, "FORBIDDEN", "不能修改其他成员的排班", nil)
 		return
 	}
-	if !s.userBelongsToWorkspace(workspaceID, request.UserID) {
+	if workspaceID != 0 && !s.userBelongsToWorkspace(workspaceID, request.UserID) {
 		failure(c, http.StatusBadRequest, "INVALID_MEMBER", "目标用户不属于当前工作区", nil)
 		return
 	}
@@ -310,7 +324,7 @@ func (s *server) batchSchedules(c *gin.Context) {
 		if _, err := tx.ExecContext(c.Request.Context(), `
 INSERT INTO schedule_revisions
     (schedule_day_id, workspace_id, user_id, work_date, before_version, after_version, before_snapshot, after_snapshot, change_type, changed_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, saved.ID, workspaceID, request.UserID, saved.WorkDate.String(), beforeVersion, saved.Version, beforeJSON, afterJSON, changeType, currentUserID(c)); err != nil {
+VALUES (?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, ?)`, saved.ID, workspaceID, request.UserID, saved.WorkDate.String(), beforeVersion, saved.Version, beforeJSON, afterJSON, changeType, currentUserID(c)); err != nil {
 			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法记录批量排班历史", nil)
 			return
 		}
@@ -348,17 +362,10 @@ func (s *server) prepareSegments(workspaceID uint64, input []scheduleSegmentRequ
 	return segments, nil
 }
 
-// scheduleHistory 在工作区鉴权后读取目标日期的排班修订快照
+// scheduleHistory 读取个人历史，团队入口另行检查成员与日期可见范围
 func (s *server) scheduleHistory(c *gin.Context) {
-	workspaceID, ok := parseID(c, "workspaceId")
+	workspaceID, userID, ok := s.scheduleContext(c, false)
 	if !ok {
-		return
-	}
-	userID, ok := parseID(c, "userId")
-	if !ok {
-		return
-	}
-	if _, ok := s.requireWorkspaceMember(c, workspaceID); !ok {
 		return
 	}
 	date, err := schedule.ParseDate(c.Param("date"))
@@ -366,13 +373,15 @@ func (s *server) scheduleHistory(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_DATE", "日期无效", nil)
 		return
 	}
-	period, ok := s.requireScheduleReader(c, workspaceID, userID)
-	if !ok {
-		return
-	}
-	if !period.contains(date) {
-		failure(c, http.StatusForbidden, "FORBIDDEN", "该日期不在成员可见范围内", nil)
-		return
+	if workspaceID != 0 {
+		period, ok := s.requireScheduleReader(c, workspaceID, userID)
+		if !ok {
+			return
+		}
+		if !period.contains(date) {
+			failure(c, http.StatusForbidden, "FORBIDDEN", "该日期不在成员可见范围内", nil)
+			return
+		}
 	}
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT id, before_version, after_version, before_snapshot, after_snapshot, change_type, changed_by, created_at
@@ -540,5 +549,5 @@ func (s *server) recordAudit(c *gin.Context, workspaceID, actorID uint64, action
 	}
 	_, _ = s.db.ExecContext(c.Request.Context(), `
 INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target_id, request_id, ip_address, user_agent, details)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, workspaceID, actorID, action, targetType, targetID, requestID, c.ClientIP(), userAgent, payload)
+VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, ?)`, workspaceID, actorID, action, targetType, targetID, requestID, c.ClientIP(), userAgent, payload)
 }

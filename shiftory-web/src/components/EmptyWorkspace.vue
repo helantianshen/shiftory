@@ -27,7 +27,7 @@ async function createWorkspace() {
   <section class="empty-workspace surface-card">
     <div class="empty-icon"><Building2 /></div>
     <h2>创建第一个工作区</h2>
-    <p>工作区用于隔离成员、班次和排班数据。你稍后还可以加入更多工作区。</p>
+    <p>工作区管理成员、班次和导入任务；个人排班在各工作区共享，也可独立查看和编辑。</p>
     <el-form label-position="top" @submit.prevent="createWorkspace"
       ><el-form-item label="工作区名称"
         ><el-input v-model="name" maxlength="80" /></el-form-item

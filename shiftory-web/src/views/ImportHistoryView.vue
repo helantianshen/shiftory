@@ -51,7 +51,7 @@ function stateLabel(state: string) {
     ><PageHeader
       eyebrow="IMPORT HISTORY"
       :title="title"
-      :description="route.meta.allImports ? '查看当前工作区成员的导入记录（只读）。' : '查看你提交的导入记录和处理状态。'"
+      :description="route.meta.allImports ? '查看当前工作区成员的导入记录（只读）。' : '查看你在当前工作区提交的导入记录和处理状态；提交后的个人排班全局共享。'"
       ><el-button v-if="!route.meta.allImports" type="primary" @click="router.push('/import')"
         >新建导入</el-button
       ></PageHeader

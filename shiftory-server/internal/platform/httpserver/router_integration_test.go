@@ -88,6 +88,18 @@ func TestCoreAPIWorkflow(t *testing.T) {
 	if second["missing"] != float64(2) {
 		t.Fatalf("expected both members missing on second day: %+v", second)
 	}
+	// 全部成员默认查询也应显示现有成员加入工作区之前的全局排班
+	if _, err := db.Exec(`UPDATE workspace_members SET joined_at = '2026-10-01 00:00:00' WHERE workspace_id = ?`, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "&memberIds="} {
+		all := apiRequest(t, router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%d/calendar?start=2026-09-04&end=2026-09-05%s", workspaceID, suffix), alice.AccessToken, nil)
+		allDays := jsonArray(t, all, "data", "days")
+		allFirst := allDays[0].(map[string]any)
+		if allFirst["working"] != float64(1) || allFirst["rest"] != float64(1) || len(allFirst["members"].([]any)) != 2 {
+			t.Fatalf("empty selection must include all current members: %+v", allFirst)
+		}
+	}
 
 	response := apiRequest(t, router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%d/schedules/%d?start=2026-09-04&end=2026-09-04", workspaceID, alice.UserID), bob.AccessToken, nil)
 	items := jsonArray(t, response, "data", "items")

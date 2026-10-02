@@ -150,3 +150,64 @@ func TestWorkspaceConsistency(t *testing.T) {
 	}
 
 }
+
+// TestPersonalScheduleScope 验证无工作区的个人排班读写、历史、批量和账号隔离
+func TestPersonalScheduleScope(t *testing.T) {
+	db := openCleanTestDatabase(t)
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.UploadDir = t.TempDir()
+	router, err := New(Dependencies{DB: db, Config: cfg, Tokens: auth.NewTokenManager(private, public, "test", cfg.JWTIssuer, cfg.JWTAudience, time.Hour, 24*time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := registerAndLogin(t, router, "personal-alice", "personal-alice@example.com")
+	bob := registerAndLogin(t, router, "personal-bob", "personal-bob@example.com")
+	saved := apiRequest(t, router, "PUT", "/api/v1/me/schedules/2026-10-01", alice.AccessToken, map[string]any{"status": "WORKING", "version": 0, "segments": []map[string]any{{"type": "TIME_RANGE", "startTime": "08:30", "endTime": "17:30", "crossDay": false}}})
+	if jsonUint(t, saved, "data", "version") != 1 {
+		t.Fatal("personal schedule not saved")
+	}
+	list := apiRequest(t, router, "GET", "/api/v1/me/schedules?start=2026-10-01&end=2026-10-31", alice.AccessToken, nil)
+	if len(list["data"].(map[string]any)["items"].([]any)) != 1 {
+		t.Fatal("personal schedule missing")
+	}
+	history := apiRequest(t, router, "GET", "/api/v1/me/schedules/2026-10-01/history", alice.AccessToken, nil)
+	if len(history["data"].(map[string]any)["items"].([]any)) != 1 {
+		t.Fatal("personal history missing")
+	}
+	other := apiRequest(t, router, "GET", "/api/v1/me/schedules?start=2026-10-01&end=2026-10-31&userId=1", bob.AccessToken, nil)
+	if len(other["data"].(map[string]any)["items"].([]any)) != 0 {
+		t.Fatal("personal schedules leaked across accounts")
+	}
+	apiRequest(t, router, "POST", "/api/v1/me/schedules/batch", alice.AccessToken, map[string]any{"dates": []string{"2026-10-02", "2026-10-03"}, "status": "REST", "segments": []any{}})
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM schedule_days WHERE workspace_id IS NULL").Scan(&count); err != nil || count != 3 {
+		t.Fatalf("personal schedules tied to workspace: %d %v", count, err)
+	}
+	status := func(method, path string, actor loginResult, input any, expected int) {
+		body, _ := json.Marshal(input)
+		code, response := rawAPIRequest(router, method, path, actor.AccessToken, body)
+		if code != expected {
+			t.Fatalf("%s %s: expected %d, got %d: %s", method, path, expected, code, response)
+		}
+	}
+	status("POST", "/api/v1/me/schedules/batch", bob, map[string]any{"userId": jsonUint(t, saved, "data", "userId"), "dates": []string{"2026-10-02"}, "status": "REST"}, http.StatusForbidden)
+	workspace := apiRequest(t, router, "POST", "/api/v1/workspaces", alice.AccessToken, map[string]any{"name": "source", "timezone": "UTC"})
+	workspaceID := jsonUint(t, workspace, "data", "id")
+	var shiftID uint64
+	if err := db.QueryRow("SELECT id FROM shifts WHERE workspace_id=? LIMIT 1", workspaceID).Scan(&shiftID); err != nil {
+		t.Fatal(err)
+	}
+	input := map[string]any{"status": "WORKING", "version": 0, "shiftWorkspaceId": workspaceID, "segments": []map[string]any{{"type": "SHIFT", "shiftId": shiftID}}}
+	status("PUT", "/api/v1/me/schedules/2026-10-04", bob, input, http.StatusForbidden)
+	apiRequest(t, router, "PUT", "/api/v1/me/schedules/2026-10-04", alice.AccessToken, input)
+	apiRequest(t, router, "DELETE", fmt.Sprintf("/api/v1/workspaces/%d", workspaceID), alice.AccessToken, map[string]any{"confirmationName": "source"})
+	preserved := apiRequest(t, router, "GET", "/api/v1/me/schedules?start=2026-10-04&end=2026-10-04", alice.AccessToken, nil)
+	day := preserved["data"].(map[string]any)["items"].([]any)[0].(map[string]any)
+	segment := day["segments"].([]any)[0].(map[string]any)
+	apiRequest(t, router, "PUT", "/api/v1/me/schedules/2026-10-04", alice.AccessToken, map[string]any{"status": "WORKING", "version": day["version"], "note": "retained", "segments": []map[string]any{{"type": "SHIFT", "existingSegmentId": segment["id"]}}})
+	apiRequest(t, router, "GET", "/api/v1/me/schedules/2026-10-04/history", alice.AccessToken, nil)
+}

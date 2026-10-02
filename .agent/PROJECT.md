@@ -3,6 +3,7 @@
 ## 文档索引
 
 - [产品需求](REQUIREMENTS.md)：业务概念、权限、导入、日历、页面与验收范围，不作为功能已完成的证明。
+- [模块数据范围](DATA_SCOPES.md)：个人共享数据与工作区隔离模块的接口、缓存和界面边界。
 - [工程约束](ENGINEERING.md)：代码分层、数据一致性、运行约束与实现边界。
 - [运行与部署](../README.md)：开发启动、配置、部署及验证命令。
 - [接口契约](../shiftory-server/api/openapi.yaml)：HTTP API 定义。

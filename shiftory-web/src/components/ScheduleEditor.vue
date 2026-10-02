@@ -58,7 +58,9 @@ function chooseStatus(status: "WORKING" | "REST") {
   if (status === "REST") form.segments = [];
 }
 function addSegment() {
-  form.segments.push({ type: "SHIFT", crossDay: false });
+  form.segments.push(props.shifts.some((shift) => shift.enabled)
+    ? { type: "SHIFT", crossDay: false }
+    : { type: "TIME_RANGE", startTime: "08:30", endTime: "17:30", crossDay: false });
 }
 function switchType(segment: EditorSegment) {
   segment.existingSegmentId = undefined;
@@ -112,7 +114,7 @@ function save() {
           v-model="segment.type"
           aria-label="时间段类型"
           @change="switchType(segment)"
-          ><el-option label="预设班次" value="SHIFT" /><el-option
+          ><el-option label="预设班次" value="SHIFT" :disabled="!shifts.some((shift) => shift.enabled)" /><el-option
             label="自定义时间"
             value="TIME_RANGE"
         /></el-select>

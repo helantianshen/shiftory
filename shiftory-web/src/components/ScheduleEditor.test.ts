@@ -47,3 +47,11 @@ it("preserves an archived shift through its persisted segment reference", async 
   });
   wrapper.unmount();
 });
+
+it("adds a custom time range when no workspace presets are available", async () => {
+  const wrapper = mount(ScheduleEditor, { props: { date: "2026-10-01", shifts: [], modelValue: null } });
+  await wrapper.get(".add-segment").trigger("click");
+  await wrapper.get('[data-test="save-schedule"]').trigger("click");
+  expect(wrapper.emitted("save")?.[0]?.[0]).toMatchObject({ segments: [{ type: "TIME_RANGE", startTime: "08:30", endTime: "17:30" }] });
+  wrapper.unmount();
+});

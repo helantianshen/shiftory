@@ -8,7 +8,12 @@ import { invalidateScheduleViews } from "@/api/query-client";
 import { api } from "@/api/client";
 import type { ScheduleDay, Shift } from "@/api/types";
 import ScheduleEditor from "./ScheduleEditor.vue";
-const props = defineProps<{ workspaceId: number; userId: number }>();
+import { useSessionStore } from "@/stores/session";
+const props = defineProps<{ workspaceId?: number; userId: number; personal?: boolean }>();
+const session = useSessionStore();
+const presetWorkspaceId = ref<number>();
+const shiftWorkspaceId = computed(() => props.personal ? presetWorkspaceId.value : props.workspaceId);
+const schedulePath = computed(() => props.personal ? "/me/schedules" : `/workspaces/${props.workspaceId}/schedules/${props.userId}`);
 const month = ref<Dayjs>(dayjs().startOf("month"));
 const editorOpen = ref(false);
 const selectedDate = ref(dayjs().format("YYYY-MM-DD"));
@@ -22,20 +27,21 @@ const end = computed(() => month.value.endOf("month").format("YYYY-MM-DD"));
 const schedules = useQuery({
   queryKey: computed(() => [
     "schedules",
-    props.workspaceId,
+    props.personal ? "personal" : props.workspaceId,
     props.userId,
     start.value,
     end.value,
   ]),
   queryFn: () =>
     api.get<{ items: ScheduleDay[] }>(
-      `/workspaces/${props.workspaceId}/schedules/${props.userId}?start=${start.value}&end=${end.value}`,
+      `${schedulePath.value}?start=${start.value}&end=${end.value}`,
     ),
 });
 const shifts = useQuery({
-  queryKey: computed(() => ["shifts", props.workspaceId]),
+  queryKey: computed(() => ["shifts", shiftWorkspaceId.value]),
+  enabled: computed(() => Boolean(shiftWorkspaceId.value)),
   queryFn: () =>
-    api.get<{ items: Shift[] }>(`/workspaces/${props.workspaceId}/shifts`),
+    api.get<{ items: Shift[] }>(`/workspaces/${shiftWorkspaceId.value}/shifts`),
 });
 const selected = computed(
   () =>
@@ -62,7 +68,7 @@ const calendar = computed(() => {
 const history = useQuery({
   queryKey: computed(() => [
     "history",
-    props.workspaceId,
+    props.personal ? "personal" : props.workspaceId,
     props.userId,
     selectedDate.value,
   ]),
@@ -75,7 +81,7 @@ const history = useQuery({
         createdAt: string;
       }[];
     }>(
-      `/workspaces/${props.workspaceId}/schedules/${props.userId}/${selectedDate.value}/history`,
+      `${schedulePath.value}/${selectedDate.value}/history`,
     ),
   enabled: computed(() => historyOpen.value),
 });
@@ -83,10 +89,10 @@ function edit(date: string) {
   selectedDate.value = date;
   editorOpen.value = true;
 }
-async function save(payload: unknown) {
+async function save(payload: { status: "WORKING" | "REST"; note: string; version: number; segments: unknown[] }) {
   await api.put(
-    `/workspaces/${props.workspaceId}/schedules/${props.userId}/${selectedDate.value}`,
-    payload,
+    `${schedulePath.value}/${selectedDate.value}`,
+    props.personal ? { ...payload, shiftWorkspaceId: shiftWorkspaceId.value } : payload,
   );
   ElMessage.success("排班已保存");
   editorOpen.value = false;
@@ -94,7 +100,7 @@ async function save(payload: unknown) {
 }
 async function saveBatch() {
   if (!batchDates.value.length) return;
-  await api.post(`/workspaces/${props.workspaceId}/schedules/batch`, {
+  await api.post(props.personal ? "/me/schedules/batch" : `/workspaces/${props.workspaceId}/schedules/batch`, {
     userId: props.userId,
     dates: batchDates.value,
     status: batchStatus.value,
@@ -147,7 +153,13 @@ async function saveBatch() {
       </div>
     </div>
     <el-drawer destroy-on-close v-model="editorOpen" title="编辑日排班" size="min(520px, 96vw)"
-      ><ScheduleEditor
+      ><el-form v-if="personal" label-position="top">
+        <el-form-item label="预设班次来源（可选）">
+          <el-select v-model="presetWorkspaceId" clearable placeholder="无需工作区即可填写自定义时间">
+            <el-option v-for="workspace in session.workspaces" :key="workspace.id" :label="workspace.name" :value="workspace.id" />
+          </el-select>
+        </el-form-item>
+      </el-form><ScheduleEditor
         :date="selectedDate"
         :shifts="shifts.data.value?.items ?? []"
         :model-value="selected"

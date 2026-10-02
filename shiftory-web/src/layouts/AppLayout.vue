@@ -11,7 +11,7 @@ import { useQuery } from "@tanstack/vue-query";
 const session = useSessionStore();
 const route = useRoute();
 const router = useRouter();
-const workspaceScoped = computed(() => !['/profile', '/invitations'].includes(route.path));
+const workspaceScoped = computed(() => route.meta.dataScope === "workspace");
 // 工作区变化不会触发路由守卫，管理权限需要随会话状态同步检查
 watch(() => [route.meta.admin, session.isAdmin], () => {
   if (route.meta.admin && !session.isAdmin) void router.replace("/overview");
@@ -55,7 +55,7 @@ async function signOut() {
         ><span>Shiftory<small>排班协同</small></span></RouterLink
       ><NavigationMenu />
       <div class="sidebar-footer">
-        清晰排班，轻松协同<span>工作区时区独立生效</span>
+        清晰排班，轻松协同<span>个人排班共享，团队按工作区查看</span>
       </div>
     </aside>
     <div v-if="sidebarOpen" class="sidebar-mask" @click="sidebarOpen = false" />
@@ -121,7 +121,7 @@ async function signOut() {
             ><span class="profile-copy"
               ><strong>{{ session.user?.displayName }}</strong
               ><small>{{
-                session.currentWorkspace?.role ?? "成员"
+                workspaceScoped ? (session.currentWorkspace?.role ?? "成员") : "个人账号"
               }}</small></span
             ><ChevronDown :size="14" /></button
           ><template #dropdown
@@ -135,7 +135,7 @@ async function signOut() {
         >
       </header>
       <main
-        :key="`${route.path}-${session.currentWorkspaceId}`"
+        :key="workspaceScoped ? `${route.path}-${session.currentWorkspaceId}` : route.path"
         class="page-container"
       >
         <RouterView />

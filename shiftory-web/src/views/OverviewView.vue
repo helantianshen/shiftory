@@ -74,7 +74,7 @@ const cards = computed(() => [
     </div>
     <div class="grid-2" style="margin-top: 18px">
       <section class="surface-card card-padding">
-        <h2 class="section-title">我的排班</h2>
+        <h2 class="section-title">我的排班（全局共享）</h2>
         <el-progress
           type="dashboard"
           :percentage="Math.round(query.data.value?.monthCompleteness ?? 0)"
@@ -93,7 +93,7 @@ const cards = computed(() => [
         </div>
       </section>
       <section class="surface-card card-padding">
-        <h2 class="section-title">团队状态</h2>
+        <h2 class="section-title">团队状态（当前工作区）</h2>
         <div v-if="query.data.value?.allRest" class="subtle-card">
           <CalendarCheck
             :size="18"

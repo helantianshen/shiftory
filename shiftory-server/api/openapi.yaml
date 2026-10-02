@@ -296,6 +296,70 @@ paths:
             schema: { $ref: '#/components/schemas/ShiftInput' }
       responses:
         '200': { $ref: '#/components/responses/Success' }
+  /me/schedules:
+    get:
+      tags: [Schedules]
+      operationId: listMySchedules
+      description: 当前认证用户的全局排班，无需工作区；不接受目标用户身份。
+      parameters:
+        - $ref: '#/components/parameters/StartDate'
+        - $ref: '#/components/parameters/EndDate'
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /me/schedules/{date}:
+    parameters:
+      - $ref: '#/components/parameters/Date'
+    put:
+      tags: [Schedules]
+      operationId: upsertMySchedule
+      description: 编辑本人全局排班；引用新的预设班次时通过 shiftWorkspaceId 指定有有效成员关系的来源工作区。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ScheduleInput'
+                - type: object
+                  properties:
+                    shiftWorkspaceId: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /me/schedules/{date}/history:
+    parameters:
+      - $ref: '#/components/parameters/Date'
+    get:
+      tags: [Schedules]
+      operationId: getMyScheduleHistory
+      description: 本人全局排班修订，来源工作区被删除后仍可查询。
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /me/schedules/batch:
+    post:
+      tags: [Schedules]
+      operationId: batchMySchedules
+      description: 批量设置本人全局排班，不允许指定其他用户；预设班次通过单日入口选择来源。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ScheduleInput'
+                - type: object
+                  required: [dates]
+                  properties:
+                    dates:
+                      type: array
+                      minItems: 1
+                      maxItems: 366
+                      items: { type: string, format: date }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '403': { $ref: '#/components/responses/Error' }
   /workspaces/{workspaceId}/schedules/{userId}:
     parameters:
       - $ref: '#/components/parameters/WorkspaceId'
