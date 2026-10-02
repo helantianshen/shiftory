@@ -15,11 +15,12 @@ import (
 
 // scheduleSegmentRequest 承载班次引用或自定义时间，展示快照由服务端补全
 type scheduleSegmentRequest struct {
-	Type      schedule.SegmentType `json:"type" binding:"required"`
-	ShiftID   *uint64              `json:"shiftId"`
-	StartTime *string              `json:"startTime"`
-	EndTime   *string              `json:"endTime"`
-	CrossDay  bool                 `json:"crossDay"`
+	ExistingSegmentID *uint64              `json:"existingSegmentId"`
+	Type              schedule.SegmentType `json:"type" binding:"required"`
+	ShiftID           *uint64              `json:"shiftId"`
+	StartTime         *string              `json:"startTime"`
+	EndTime           *string              `json:"endTime"`
+	CrossDay          bool                 `json:"crossDay"`
 }
 
 // scheduleRequest 承载日排班内容和客户端已知版本
@@ -62,10 +63,38 @@ func (s *server) upsertSchedule(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_SCHEDULE", "排班信息不完整", nil)
 		return
 	}
+	// 复用历史班次必须绑定当前用户和日期，客户端不能自行提交展示快照
+	existingSegments := map[uint64]schedule.Segment{}
+	for _, item := range request.Segments {
+		if item.ExistingSegmentID == nil {
+			continue
+		}
+		days, err := s.querySchedules(workspaceID, []uint64{targetUserID}, date, date)
+		if err != nil {
+			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取历史班次", nil)
+			return
+		}
+		for _, day := range days {
+			for _, segment := range day.Segments {
+				existingSegments[segment.ID] = segment
+			}
+		}
+		break
+	}
 	// 把请求时间段转换为领域对象，引用班次使用服务端快照而非客户端展示值
 	segments := make([]schedule.Segment, 0, len(request.Segments))
 	for index, item := range request.Segments {
 		segment := schedule.Segment{Type: item.Type, ShiftID: item.ShiftID, CrossDay: item.CrossDay, SortOrder: index}
+		if item.ExistingSegmentID != nil {
+			preserved, exists := existingSegments[*item.ExistingSegmentID]
+			if !exists || item.Type != preserved.Type {
+				failure(c, http.StatusBadRequest, "INVALID_SEGMENT", "历史时间段不属于该日期", nil)
+				return
+			}
+			preserved.SortOrder = index
+			segments = append(segments, preserved)
+			continue
+		}
 		switch item.Type {
 		case schedule.SegmentShift:
 			if item.ShiftID == nil {
@@ -161,19 +190,25 @@ WHERE id = ? AND version = ?`, day.Status, day.SourceType, day.Note, day.Version
 		}
 	}
 	// 时间段整体重写，保存与本次排班一致的班次名称、颜色和时间快照
-	for _, segment := range day.Segments {
+	for index, segment := range day.Segments {
 		var start, end any
 		if segment.StartTime != nil {
 			start, end = segment.StartTime.String()+":00", segment.EndTime.String()+":00"
 		}
-		if _, err := tx.ExecContext(c.Request.Context(), `
+		result, err := tx.ExecContext(c.Request.Context(), `
 INSERT INTO schedule_segments
     (schedule_day_id, segment_type, shift_id, shift_name_snapshot, shift_code_snapshot, start_time, end_time, cross_day, display_color_snapshot, sort_order, original_label)
 VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''))`,
 			day.ID, segment.Type, segment.ShiftID, segment.ShiftName, segment.ShiftCode, start, end,
-			segment.CrossDay, segment.DisplayColor, segment.SortOrder, segment.OriginalLabel); err != nil {
+			segment.CrossDay, segment.DisplayColor, segment.SortOrder, segment.OriginalLabel)
+		if err != nil {
 			return schedule.Day{}, err
 		}
+		segmentID, err := result.LastInsertId()
+		if err != nil {
+			return schedule.Day{}, err
+		}
+		day.Segments[index].ID = uint64(segmentID)
 	}
 	// 记录前后业务快照与版本，历史查询和安全撤销不依赖通用审计文本
 	after, _ := json.Marshal(storedFromDay(day))
@@ -234,6 +269,10 @@ func (s *server) listSchedules(c *gin.Context) {
 	if _, ok := s.requireWorkspaceMember(c, workspaceID); !ok {
 		return
 	}
+	period, ok := s.requireScheduleReader(c, workspaceID, targetUserID)
+	if !ok {
+		return
+	}
 	start, startErr := schedule.ParseDate(c.Query("start"))
 	end, endErr := schedule.ParseDate(c.Query("end"))
 	if startErr != nil || endErr != nil || start.String() > end.String() {
@@ -247,7 +286,9 @@ func (s *server) listSchedules(c *gin.Context) {
 	}
 	items := make([]gin.H, 0, len(days))
 	for _, day := range days {
-		items = append(items, scheduleResponse(day))
+		if period.contains(day.WorkDate) {
+			items = append(items, scheduleResponse(day))
+		}
 	}
 	success(c, http.StatusOK, gin.H{"items": items})
 }
@@ -338,6 +379,8 @@ func scheduleResponse(day schedule.Day) gin.H {
 		item := gin.H{"id": segment.ID, "type": segment.Type, "crossDay": segment.CrossDay, "sortOrder": segment.SortOrder, "originalLabel": segment.OriginalLabel}
 		if segment.ShiftID != nil {
 			item["shiftId"] = *segment.ShiftID
+		}
+		if segment.ShiftName != "" {
 			item["shiftName"] = segment.ShiftName
 			item["shiftCode"] = segment.ShiftCode
 			item["displayColor"] = segment.DisplayColor
@@ -349,4 +392,20 @@ func scheduleResponse(day schedule.Day) gin.H {
 		segments = append(segments, item)
 	}
 	return gin.H{"id": day.ID, "workspaceId": day.WorkspaceID, "userId": day.UserID, "workDate": day.WorkDate.String(), "status": day.Status, "sourceType": day.SourceType, "sourceImportId": day.SourceImportID, "note": day.Note, "version": day.Version, "segments": segments}
+}
+
+// requireScheduleReader 限制目标为工作区现有或历史成员，并返回日历使用的日期可见范围
+func (s *server) requireScheduleReader(c *gin.Context, workspaceID, userID uint64) (memberPeriod, bool) {
+	periods, err := s.memberPeriods(workspaceID)
+	if err != nil {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法检查成员范围", nil)
+		return memberPeriod{}, false
+	}
+	for _, period := range periods {
+		if period.UserID == userID {
+			return period, true
+		}
+	}
+	failure(c, http.StatusForbidden, "FORBIDDEN", "无权查看该用户的排班", nil)
+	return memberPeriod{}, false
 }

@@ -157,7 +157,7 @@ func (s *server) listMembers(c *gin.Context) {
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT u.id, u.username, u.email, u.display_name, COALESCE(u.avatar_url, ''), m.role, m.status, m.joined_at, m.left_at,
        (SELECT COUNT(*) FROM schedule_days sd
-        WHERE sd.workspace_id = m.workspace_id AND sd.user_id = m.user_id
+        WHERE sd.user_id = m.user_id
           AND sd.work_date BETWEEN ? AND ?),
        (SELECT MAX(ij.created_at) FROM import_jobs ij
         WHERE ij.workspace_id = m.workspace_id AND ij.target_user_id = m.user_id
@@ -214,6 +214,10 @@ func (s *server) createInvitation(c *gin.Context) {
 	var request invitationRequest
 	if err := c.ShouldBindJSON(&request); err != nil || (request.Role != "MEMBER" && request.Role != "ADMIN") || (strings.TrimSpace(request.Email) == "" && strings.TrimSpace(request.Username) == "") || (strings.TrimSpace(request.Email) != "" && strings.TrimSpace(request.Username) != "") {
 		failure(c, http.StatusBadRequest, "INVALID_INVITATION", "邀请信息无效", nil)
+		return
+	}
+	if request.Role == "ADMIN" && member.Role != "OWNER" {
+		failure(c, http.StatusForbidden, "FORBIDDEN", "只有所有者可以邀请管理员", nil)
 		return
 	}
 	// 用户名邀请先解析有效账号的邮箱，两种入口最终沿用同一邮箱归属校验
@@ -280,17 +284,17 @@ func (s *server) acceptInvitation(c *gin.Context) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	var invitationID, workspaceID uint64
+	var invitationID, workspaceID, invitedBy uint64
 	var email, role, status string
 	var expiresAt time.Time
 	// 支持令牌或邀请 ID 定位，行锁与邮箱归属检查共同保护接受流程
-	query := `SELECT id, workspace_id, email_normalized, role, status, expires_at FROM workspace_invitations WHERE token_hash = ? FOR UPDATE`
+	query := `SELECT id, workspace_id, email_normalized, role, status, expires_at, invited_by FROM workspace_invitations WHERE token_hash = ? FOR UPDATE`
 	args := []any{hash[:]}
 	if request.InvitationID != 0 {
-		query = `SELECT id, workspace_id, email_normalized, role, status, expires_at FROM workspace_invitations WHERE id = ? FOR UPDATE`
+		query = `SELECT id, workspace_id, email_normalized, role, status, expires_at, invited_by FROM workspace_invitations WHERE id = ? FOR UPDATE`
 		args = []any{request.InvitationID}
 	}
-	err = tx.QueryRowContext(c.Request.Context(), query, args...).Scan(&invitationID, &workspaceID, &email, &role, &status, &expiresAt)
+	err = tx.QueryRowContext(c.Request.Context(), query, args...).Scan(&invitationID, &workspaceID, &email, &role, &status, &expiresAt, &invitedBy)
 	if err != nil || status != "PENDING" || time.Now().UTC().After(expiresAt) {
 		failure(c, http.StatusConflict, "INVITATION_UNAVAILABLE", "邀请不存在、已处理或已过期", nil)
 		return
@@ -300,11 +304,27 @@ func (s *server) acceptInvitation(c *gin.Context) {
 		failure(c, http.StatusForbidden, "INVITATION_EMAIL_MISMATCH", "邀请邮箱与当前账号不匹配", nil)
 		return
 	}
-	// 接受邀请会激活成员关系并重置加入时间，随后在同一事务中标记邀请已接受
-	_, err = tx.ExecContext(c.Request.Context(), `
-INSERT INTO workspace_members (workspace_id, user_id, role, status, joined_at, left_at)
-VALUES (?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP(6), NULL)
-ON DUPLICATE KEY UPDATE role = VALUES(role), status = 'ACTIVE', joined_at = CURRENT_TIMESTAMP(6), left_at = NULL`, workspaceID, userID, role)
+	// 接受时检查邀请人的当前权限，旧邀请不能绕过角色降级或成员禁用
+	var inviterRole string
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ? AND status = 'ACTIVE' FOR UPDATE", workspaceID, invitedBy).Scan(&inviterRole); err != nil || (inviterRole != "OWNER" && inviterRole != "ADMIN") || (role == "ADMIN" && inviterRole != "OWNER") {
+		failure(c, http.StatusForbidden, "INVITATION_UNAVAILABLE", "邀请人的权限已失效，请重新邀请", nil)
+		return
+	}
+	var existingRole, existingStatus string
+	existingErr := tx.QueryRowContext(c.Request.Context(), "SELECT role, status FROM workspace_members WHERE workspace_id = ? AND user_id = ? FOR UPDATE", workspaceID, userID).Scan(&existingRole, &existingStatus)
+	if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法检查成员状态", nil)
+		return
+	}
+	if existingErr == nil && (existingRole == "OWNER" || existingStatus != "REMOVED") {
+		failure(c, http.StatusConflict, "MEMBERSHIP_EXISTS", "成员关系已存在，请通过成员管理修改", nil)
+		return
+	}
+	if existingErr == nil {
+		_, err = tx.ExecContext(c.Request.Context(), "UPDATE workspace_members SET role = ?, status = 'ACTIVE', joined_at = UTC_TIMESTAMP(6), left_at = NULL WHERE workspace_id = ? AND user_id = ?", role, workspaceID, userID)
+	} else {
+		_, err = tx.ExecContext(c.Request.Context(), "INSERT INTO workspace_members (workspace_id, user_id, role, status) VALUES (?, ?, ?, 'ACTIVE')", workspaceID, userID, role)
+	}
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法加入工作区", nil)
 		return

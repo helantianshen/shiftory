@@ -5,7 +5,7 @@ Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录
 ## 技术结构
 
 - 前端：Vue 3、TypeScript、Vite、Vue Router、Pinia、TanStack Vue Query、Element Plus、SCSS。
-- 后端：Go 1.27、Gin、`database/sql`、MySQL 8.4、Goose、Excelize、tRPC-Agent-Go。
+- 后端：Go 1.27、Gin、`database/sql`、MySQL 8、GORM AutoMigrate、Excelize、tRPC-Agent-Go。
 - 认证：Ed25519 Access JWT + 轮换 Refresh JWT。Access Token 只驻留前端内存；Refresh Token 只在 HttpOnly Cookie 中，刷新和注销另有 CSRF 双提交校验。
 - 工程形态：单仓库、前后端分离、模块化单体；API 进程内置图片识别 Worker，迁移命令独立执行。
 
@@ -19,7 +19,7 @@ Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录
 
 ## 本地启动
 
-前置环境：Go 1.27.1、Node.js 24（含 npm）、MySQL 8.4。后端使用 **进程环境变量 + YAML 配置文件**，前端继续使用 Vite 原有的 env 文件加载方式，不读取 YAML。
+前置环境：Go 1.27.1、Node.js 24（含 npm）、MySQL 8.0.16+（Compose 使用 8.4）。后端使用 **进程环境变量 + YAML 配置文件**，前端继续使用 Vite 原有的 env 文件加载方式，不读取 YAML。
 
 后端 API 和迁移程序接受相同的启动参数：
 
@@ -48,10 +48,10 @@ Copy-Item config/production.example.yaml config/production.yaml
 
 仓库的 `.run` 目录包含可共享的 GoLand 运行配置，重新打开项目或执行 **File > Reload All from Disk** 后，可以直接使用：
 
-- `Shiftory Migrate`：执行一次数据库迁移；首次启动或数据库结构变化后运行。
+- `Shiftory Migrate`：执行一次数据库迁移；可单独执行 GORM 自动迁移；API 启动时也会执行。
 - `Shiftory API`：启动后端 API，图片 AI Worker 按配置在同一进程内启用；共享配置传入 `--env development --config <项目目录>/config/development.yaml`。
 - `Shiftory Web (pnpm)`：通过 GoLand 的 npm 类型运行 `pnpm dev`。JetBrains 将 npm、Yarn 和 pnpm 脚本统一放在这个运行配置类型中，所以无需创建自定义 Shell 配置。
-- `Shiftory Development`：同时启动 API 和前端，适合日常开发；不会自动执行迁移。
+- `Shiftory Development`：同时启动 API 和前端，适合日常开发；API 会自动同步表结构。
 
 运行配置默认不会自动显示在 Services 中。按 `Alt+8` 打开 Services，依次选择 **Add Service > Run Configuration**，加入 `Go Application`、`npm` 和 `Compound` 类型；其中 `npm` 节点就是前端 pnpm 服务。
 
@@ -69,7 +69,7 @@ Copy-Item config/production.example.yaml config/production.yaml
 
 ```powershell
 .\scripts\start-dev.ps1 -ValidateOnly   # 检查配置路径、目录和开发工具，不启动服务；YAML 由后端启动时校验
-.\scripts\start-dev.ps1 -SkipMigrate    # 跳过迁移
+.\scripts\start-dev.ps1 -SkipMigrate    # 跳过启动脚本的预检查，API 仍会自动迁移
 .\scripts\start-dev.ps1 -BackendOnly    # 只启动 API
 .\scripts\start-dev.ps1 -FrontendOnly   # 只启动前端
 .\scripts\start-dev.ps1 -EnableAI       # 临时启用 API 内的图片识别能力
@@ -94,7 +94,6 @@ docker compose up -d mysql
 
 ```powershell
 cd shiftory-server
-go run ./cmd/migrate --env development
 go run ./cmd/api --env development
 ```
 
@@ -150,7 +149,7 @@ go run ./cmd/api --env development
 
 ## 验证
 
-后端集成测试需要已有可访问的 MySQL，会创建专用测试库。`SHIFTORY_TEST_DATABASE_DSN` 仅供数据库测试使用，需通过进程环境变量提供，不从运行时 YAML 或 env 文件读取：
+后端集成测试需要已有可访问的 MySQL，会创建专用测试库。`SHIFTORY_TEST_DATABASE_DSN` 供全部后端数据库集成测试复用连接凭据与地址；测试只使用 `shiftory_test`、`shiftory_test_httpserver`、`shiftory_test_importjob` 专用库，不使用 DSN 指定的业务库。该变量仅供测试使用，需通过进程环境变量提供，不从运行时 YAML 或 env 文件读取：
 
 ```powershell
 cd shiftory-server
@@ -180,3 +179,27 @@ API 启动后，可从仓库根目录运行真实 HTTP 验收：
 - 普通成员可以查看同工作区其他成员的完整已确认排班（班次、时间、跨日与备注），但不能修改他人排班，也不能读取他人的原始导入文件或 AI 响应。
 - 导入提交与撤销均为全有或全无事务；预览后的版本变化会触发冲突，不进行静默覆盖或部分恢复。
 - JWT 私钥、上传文件、构建产物和本地 YAML 和前端 env 文件已排除在 Git 跟踪之外；不要提交真实密钥。
+
+## 数据库初始化与自动迁移
+
+项目仍处于开发阶段，尚未部署。表结构由 `shiftory-server/internal/platform/database/models.go` 维护，API 在启动 Worker 和监听 HTTP 前执行 GORM `AutoMigrate`；失败则停止启动。`cmd/migrate` 保留为仅同步结构后退出的命令，两者均不自动创建账号。
+
+新建空数据库后，可直接启动 API 获得空表，再通过注册页面创建用户；需要开发初始数据时，在第一次启动 API **之前**导入完整脚本：
+
+```bash
+mysql -h 127.0.0.1 -P 13306 -u root -p < shiftory-server/sql/init.sql
+```
+
+端口和用户以本地配置为准。脚本包含全部 15 张表、索引、外键、状态约束，以及以下开发数据：
+
+- 登录用户名：`admin`，邮箱：`admin@example.com`，密码：`ShiftoryDev123!`（数据库保存 Argon2id 摘要）
+- 工作区：`开发工作区`；初始用户为该工作区所有者，并具有默认主题、当前工作区偏好和早／中／晚三种预设班次
+- 项目不存在全局管理员角色；该用户的管理范围限于其所属工作区
+
+脚本会创建并选择 `shiftory` 数据库，仅供空库执行，不自动重置现有数据库，不在服务启动时重复导入。请在使用后修改开发初始密码。初始化 SQL 导入后可直接启动 API，结构同步不会覆盖初始账号。
+
+旧版 Goose SQL 和依赖已移除。AutoMigrate 不会删除废弃字段，也不负责字段重命名或旧约束的数据转换；已有开发库应先确认需保留的数据，再人工处理不兼容结构，不能通过自动清库来解决。模型结构变更时须同步更新初始化 SQL，并运行数据库集成测试验证二者一致。
+
+项目统一使用 `utf8mb4_0900_as_cs`：大小写和重音字符均区分（`A` 与 `a`、`e` 与 `é` 均不相等）。应用连接、建表、初始化脚本和 Compose 默认保持一致。仅修改数据库默认排序规则或 GORM 新表选项不会转换已有文本列；已有库应单独检查并转换表结构，本项目不会在每次启动时重建表。
+
+数据库排序规则不改变应用层规范化：用户名、邮箱和班次别名仍按现有规则转小写、去首尾空白，因此对应业务匹配不会自动变成大小写敏感。

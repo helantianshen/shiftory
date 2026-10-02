@@ -51,6 +51,8 @@
 
 工作区是成员关系、角色、班次定义、导入记录与访问权限的边界。正式日排班按用户和日期全局唯一，工作区不是日排班的独立副本边界。
 
+解散工作区会清理工作区成员、班次定义和导入资料，但保留用户的全局正式排班及修订快照。来源工作区、班次或导入被删除后，其关联可以为空。
+
 每个工作区独立维护：
 
 * 工作区成员；
@@ -1128,7 +1130,7 @@ Element Plus 主要用于快速完成：
 Gin
 database/sql + go-sql-driver/mysql
 MySQL 8
-Goose
+GORM AutoMigrate
 Excelize
 tRPC-Agent-Go
 OpenAPI 3.1
@@ -1152,7 +1154,7 @@ Excelize
 database/sql + 业务模块 Repository
 负责全部数据访问、事务边界、行级锁和显式并发控制
 
-Goose
+GORM AutoMigrate
 负责数据库版本迁移
 ```
 

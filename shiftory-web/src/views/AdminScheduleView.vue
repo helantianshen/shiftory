@@ -7,8 +7,9 @@ import { api } from "@/api/client";
 import type { Member } from "@/api/types";
 import { useSessionStore } from "@/stores/session";
 const session = useSessionStore();
-const workspaceID = computed(() => session.currentWorkspace!.id);
+const workspaceID = computed(() => session.currentWorkspace?.id ?? 0);
 const members = useQuery({
+  enabled: computed(() => workspaceID.value > 0),
   queryKey: computed(() => ["members", workspaceID.value]),
   queryFn: () =>
     api.get<{ items: Member[] }>(`/workspaces/${workspaceID.value}/members`),

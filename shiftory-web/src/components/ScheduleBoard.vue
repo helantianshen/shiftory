@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useQuery, useQueryClient } from "@tanstack/vue-query";
+import { useQuery } from "@tanstack/vue-query";
 import dayjs, { type Dayjs } from "dayjs";
 import { ArrowLeft, ArrowRight, History, Layers3 } from "lucide-vue-next";
 import { ElMessage } from "element-plus";
+import { invalidateScheduleViews } from "@/api/query-client";
 import { api } from "@/api/client";
 import type { ScheduleDay, Shift } from "@/api/types";
 import ScheduleEditor from "./ScheduleEditor.vue";
@@ -15,7 +16,7 @@ const historyOpen = ref(false);
 const batchOpen = ref(false);
 const batchDates = ref<string[]>([]);
 const batchStatus = ref<"WORKING" | "REST">("REST");
-const queryClient = useQueryClient();
+
 const start = computed(() => month.value.startOf("month").format("YYYY-MM-DD"));
 const end = computed(() => month.value.endOf("month").format("YYYY-MM-DD"));
 const schedules = useQuery({
@@ -89,9 +90,7 @@ async function save(payload: unknown) {
   );
   ElMessage.success("排班已保存");
   editorOpen.value = false;
-  await queryClient.invalidateQueries({
-    queryKey: ["schedules", props.workspaceId, props.userId],
-  });
+  await invalidateScheduleViews();
 }
 async function saveBatch() {
   if (!batchDates.value.length) return;
@@ -104,9 +103,7 @@ async function saveBatch() {
   });
   ElMessage.success(`已更新 ${batchDates.value.length} 天`);
   batchOpen.value = false;
-  await queryClient.invalidateQueries({
-    queryKey: ["schedules", props.workspaceId, props.userId],
-  });
+  await invalidateScheduleViews();
 }
 </script>
 <template>
@@ -149,7 +146,7 @@ async function saveBatch() {
         </button>
       </div>
     </div>
-    <el-drawer v-model="editorOpen" title="编辑日排班" size="min(520px, 96vw)"
+    <el-drawer destroy-on-close v-model="editorOpen" title="编辑日排班" size="min(520px, 96vw)"
       ><ScheduleEditor
         :date="selectedDate"
         :shifts="shifts.data.value?.items ?? []"

@@ -157,6 +157,8 @@ func segmentResponses(segments []schedule.Segment) []gin.H {
 		item := gin.H{"type": segment.Type, "crossDay": segment.CrossDay}
 		if segment.ShiftID != nil {
 			item["shiftId"] = *segment.ShiftID
+		}
+		if segment.ShiftName != "" {
 			item["shiftName"] = segment.ShiftName
 			item["shiftCode"] = segment.ShiftCode
 			item["displayColor"] = segment.DisplayColor

@@ -67,3 +67,26 @@ func TestImageProcessorCreatesReviewItemsWithoutWritingSchedules(t *testing.T) {
 		t.Fatal("image processor must not write formal schedules")
 	}
 }
+
+// TestImagePreviewFindsGlobalSchedule 验证图片预览能够识别其他工作区创建的已有排班
+func TestImagePreviewFindsGlobalSchedule(t *testing.T) {
+	db := openWorkerTestDatabase(t)
+	seedWorkerJob(t, db, "PENDING", time.Now().UTC())
+	var workspaceID, userID uint64
+	if err := db.QueryRow("SELECT workspace_id, target_user_id FROM import_jobs LIMIT 1").Scan(&workspaceID, &userID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := db.Exec("INSERT INTO workspaces (name,timezone,owner_user_id,created_by) VALUES ('Other','UTC',?,?)", userID, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID, _ := result.LastInsertId()
+	if _, err := db.Exec("INSERT INTO schedule_days (workspace_id,user_id,work_date,status,source_type,note,version,created_by) VALUES (?,?,'2026-09-01','REST','MANUAL','global',3,?)", otherID, userID, userID); err != nil {
+		t.Fatal(err)
+	}
+	processor := NewImageProcessor(db, memoryStore{}, fakeRecognizer{}, "test")
+	snapshot, id, version, found, err := processor.loadExisting(context.Background(), workspaceID, userID, schedule.MustDate("2026-09-01"))
+	if err != nil || !found || id == 0 || version != 3 || snapshot.Note != "global" {
+		t.Fatalf("global preview lookup failed: found=%v version=%d err=%v", found, version, err)
+	}
+}

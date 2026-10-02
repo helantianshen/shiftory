@@ -92,14 +92,11 @@ func (r *Runner) submitAvailable(ctx context.Context) {
 	// 按当前空闲容量提交领取操作，池满时立即退出而不阻塞通知循环
 	for r.pool.Free() > 0 {
 		err := r.pool.Submit(func() {
-			r.logger.Debug("image worker poll started")
 			outcome, runErr := r.worker.RunOnceDetailed(ctx)
 			if runErr != nil && !errors.Is(runErr, context.Canceled) {
 				r.logger.Error("image worker poll failed", "error", runErr)
 			} else {
 				switch outcome.State {
-				case "idle":
-					r.logger.Debug("image worker poll found no pending jobs")
 				case "completed":
 					r.logger.Info("image job completed", "job_id", outcome.JobID, "attempt", outcome.Attempt)
 				case "retrying":

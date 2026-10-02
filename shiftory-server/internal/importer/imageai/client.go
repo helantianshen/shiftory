@@ -67,6 +67,10 @@ func NewOpenAICompatibleWithTimeoutAndLogger(modelName, apiKey, baseURL string, 
 	}
 	// DeepSeek SDK 变体默认按纯文本组装消息，视觉模型需要保留图像内容块
 	options := []openai.Option{openai.WithAPIKey(apiKey), openai.WithTextOnlyMessageContent(false)}
+	// 自定义网关地址无法供 SDK 推断 DeepSeek 协议变体，模型前缀提供明确的兼容信息
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-") {
+		options = append(options, openai.WithVariant(openai.VariantDeepSeek))
+	}
 	if strings.TrimSpace(baseURL) != "" {
 		options = append(options, openai.WithBaseURL(strings.TrimRight(baseURL, "/")))
 	}

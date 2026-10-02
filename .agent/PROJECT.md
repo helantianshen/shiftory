@@ -10,8 +10,10 @@
 
 ## 架构
 
+- 项目处于开发阶段，尚未部署。空库初始化脚本为 `shiftory-server/sql/init.sql`，包含完整结构与开发初始账号。
+
 - 单仓库，Vue 3 前端与 Go 模块化单体后端。
-- 后端长期运行入口为 `shiftory-server/cmd/api`；一次性数据库迁移入口为 `shiftory-server/cmd/migrate`。
+- 后端长期运行入口为 `shiftory-server/cmd/api`；API 启动时通过 GORM AutoMigrate 同步表结构，一次性结构同步入口为 `shiftory-server/cmd/migrate`。
 - 图片导入任务 Worker 作为 API 进程内的持久化 Runner 运行，不存在独立的 `cmd/worker` 部署入口。
 - MySQL 保存业务数据和图片导入任务队列；文件存储保存上传原文件。
 
@@ -22,7 +24,6 @@
 - 本地配置为忽略的 `config/development.yaml` / `config/production.yaml`，可分发样例为对应 `*.example.yaml`。前端保留 Vite 原有 env 文件读取方式，不读取 YAML。
 - `scripts/start-dev.ps1` 负责向后端传递开发模式和 YAML 路径、执行迁移并启动 API 和前端；`-EnableAI` 只控制 API 内图片识别能力。
 - Linux 部署使用 `deploy/shiftory.service` 与 `scripts/start-linux.sh`，单机只运行 API 服务。
-- GoLand 共享运行配置位于 `.run/`，包含 API、迁移、前端和开发组合配置。
 - 前端固定使用 `pnpm@11.19.0`；启动器支持在没有全局 pnpm/Corepack 时通过 npm 缓存降级运行。
 
 ## 验证基线

@@ -54,7 +54,7 @@ async function upload() {
     ElMessage.success(
       type.value === "image" ? "识别任务已创建" : "导入预览已生成",
     );
-    await router.push(`/imports/${job.id}`);
+    await router.push({ path: `/imports/${job.id}`, query: { workspaceId: workspaceID.value } });
   } catch (error) {
     ElMessage.error(formatApiError(error, "上传失败"));
   } finally {

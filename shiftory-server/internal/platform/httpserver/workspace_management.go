@@ -135,6 +135,13 @@ func (s *server) transferWorkspace(c *gin.Context) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
+	// 所有者校验与破坏性操作共用事务锁，避免与转让并发时使用过期权限
+	var ownerID uint64
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT owner_user_id FROM workspaces WHERE id = ? FOR UPDATE", workspaceID).Scan(&ownerID); err != nil || ownerID != currentUserID(c) {
+		failure(c, http.StatusForbidden, "FORBIDDEN", "工作区所有权已变化", nil)
+		return
+	}
+
 	var targetStatus string
 	if err := tx.QueryRowContext(c.Request.Context(), `SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ? FOR UPDATE`, workspaceID, request.NewOwnerUserID).Scan(&targetStatus); err != nil || targetStatus != "ACTIVE" {
 		failure(c, http.StatusBadRequest, "INVALID_NEW_OWNER", "新所有者必须是当前有效成员", nil)
@@ -208,11 +215,15 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
+	// 所有者校验与破坏性操作共用事务锁，避免与转让并发时使用过期权限
+	var ownerID uint64
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT owner_user_id FROM workspaces WHERE id = ? FOR UPDATE", workspaceID).Scan(&ownerID); err != nil || ownerID != currentUserID(c) {
+		failure(c, http.StatusForbidden, "FORBIDDEN", "工作区所有权已变化", nil)
+		return
+	}
+
 	// 按依赖顺序删除关联记录并清理当前工作区偏好，任一失败回滚数据库事务
 	deletions := []string{
-		"DELETE FROM schedule_revisions WHERE workspace_id = ?",
-		"DELETE ss FROM schedule_segments ss JOIN schedule_days sd ON sd.id = ss.schedule_day_id WHERE sd.workspace_id = ?",
-		"DELETE FROM schedule_days WHERE workspace_id = ?",
 		"DELETE ii FROM import_items ii JOIN import_jobs ij ON ij.id = ii.import_job_id WHERE ij.workspace_id = ?",
 		"DELETE f FROM import_files f JOIN import_jobs ij ON ij.id = f.import_job_id WHERE ij.workspace_id = ?",
 		"DELETE FROM import_jobs WHERE workspace_id = ?",

@@ -19,6 +19,7 @@ const emit = defineEmits<{
   ];
 }>();
 type EditorSegment = {
+  existingSegmentId?: number;
   type: "SHIFT" | "TIME_RANGE";
   shiftId?: number;
   startTime?: string;
@@ -32,14 +33,15 @@ const form = reactive<{
   segments: EditorSegment[];
 }>({ status: "WORKING", note: "", version: 0, segments: [] });
 watch(
-  () => props.modelValue,
-  (value) => {
+  () => [props.date, props.modelValue] as const,
+  ([, value]) => {
     form.status = value?.status ?? "WORKING";
     form.note = value?.note ?? "";
     form.version = value?.version ?? 0;
     form.segments =
       value?.segments.map((segment) => ({
         type: segment.type,
+        existingSegmentId: segment.type === "SHIFT" && !props.shifts.some((shift) => shift.id === segment.shiftId && shift.enabled) ? segment.id : undefined,
         shiftId: segment.shiftId,
         startTime: segment.startTime,
         endTime: segment.endTime,
@@ -59,6 +61,7 @@ function addSegment() {
   form.segments.push({ type: "SHIFT", crossDay: false });
 }
 function switchType(segment: EditorSegment) {
+  segment.existingSegmentId = undefined;
   segment.shiftId = undefined;
   segment.startTime = segment.type === "TIME_RANGE" ? "08:30" : undefined;
   segment.endTime = segment.type === "TIME_RANGE" ? "17:30" : undefined;
@@ -114,7 +117,7 @@ function save() {
             value="TIME_RANGE"
         /></el-select>
         <el-select
-          v-if="segment.type === 'SHIFT'"
+          v-if="segment.type === 'SHIFT' && !segment.existingSegmentId"
           v-model="segment.shiftId"
           placeholder="选择班次"
           ><el-option
@@ -123,6 +126,9 @@ function save() {
             :label="shift.name"
             :value="shift.id"
         /></el-select>
+        <span v-else-if="segment.existingSegmentId" class="muted">
+          {{ modelValue?.segments.find((item) => item.id === segment.existingSegmentId)?.shiftName }}（保留原班次）
+        </span>
         <template v-else
           ><el-time-select
             v-model="segment.startTime"

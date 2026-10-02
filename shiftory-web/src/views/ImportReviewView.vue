@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useQuery, useQueryClient } from "@tanstack/vue-query";
+import { useQuery } from "@tanstack/vue-query";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { invalidateScheduleViews } from "@/api/query-client";
 import { api } from "@/api/client";
 import type { ImportItem, ImportJob, ScheduleDay, Shift } from "@/api/types";
 import PageHeader from "@/components/PageHeader.vue";
@@ -19,13 +20,14 @@ import {
 const session = useSessionStore();
 const route = useRoute();
 const router = useRouter();
-const readOnly = computed(() => route.path.startsWith('/admin/imports'));
-const queryClient = useQueryClient();
+const readOnly = computed(() => Boolean(route.meta.readOnly));
+
 const jobID = Number(route.params.id);
-const workspaceID = computed(() => session.currentWorkspace!.id);
+const workspaceID = computed(() => session.currentWorkspace?.id ?? 0);
 const saving = ref(false);
 const editing = ref<ImportItem>();
 const query = useQuery({
+  enabled: computed(() => workspaceID.value > 0),
   queryKey: computed(() => ["import", workspaceID.value, jobID]),
   queryFn: () =>
     api.get<ImportJob>(`/workspaces/${workspaceID.value}/imports/${jobID}`),
@@ -35,11 +37,14 @@ const query = useQuery({
       : false,
 });
 const shifts = useQuery({
+  enabled: computed(() => workspaceID.value > 0),
   queryKey: computed(() => ["shifts", workspaceID.value]),
   queryFn: () =>
     api.get<{ items: Shift[] }>(`/workspaces/${workspaceID.value}/shifts`),
 });
 const job = computed(() => query.data.value);
+const canManage = computed(() => !readOnly.value && Boolean(job.value) && (session.isAdmin || job.value?.targetUserId === session.user?.id));
+const canReview = computed(() => canManage.value && job.value?.state === "NEEDS_REVIEW");
 const conflicts = computed(
   () => job.value?.items?.filter((item) => item.type === "CONFLICT") ?? [],
 );
@@ -62,9 +67,11 @@ const editorModel = computed<ScheduleDay | null>(() => {
 });
 
 function setAll(decision: "KEEP_EXISTING" | "USE_IMPORTED" | "SKIP") {
+  if (!canReview.value) return;
   for (const item of conflicts.value) item.decision = decision;
 }
 async function saveDecisions() {
+  if (!canReview.value) return;
   const decisions = conflicts.value
     .filter((item) => item.decision)
     .map((item) => ({ itemId: item.id, decision: item.decision }));
@@ -81,7 +88,7 @@ async function saveCorrection(payload: {
   version: number;
   segments: unknown[];
 }) {
-  if (!editing.value) return;
+  if (!canReview.value || !editing.value) return;
   await api.put(
     `/workspaces/${workspaceID.value}/imports/${jobID}/items/${editing.value.id}`,
     { status: payload.status, note: payload.note, segments: payload.segments },
@@ -91,6 +98,7 @@ async function saveCorrection(payload: {
   await query.refetch();
 }
 async function commit() {
+  if (!canReview.value) return;
   if (unresolved.value) {
     ElMessage.warning("请先处理全部冲突");
     return;
@@ -108,14 +116,13 @@ async function commit() {
       {},
     );
     ElMessage.success("导入已提交");
-    await queryClient.invalidateQueries({
-      queryKey: ["import", workspaceID.value, jobID],
-    });
+    await invalidateScheduleViews();
   } finally {
     saving.value = false;
   }
 }
 async function rollback() {
+  if (!canManage.value) return;
   await ElMessageBox.confirm(
     "撤销会恢复导入前的数据；若排班已被再次修改，整次撤销将被拒绝。",
     "撤销导入",
@@ -126,9 +133,10 @@ async function rollback() {
     {},
   );
   ElMessage.success("导入已撤销");
-  await query.refetch();
+  await invalidateScheduleViews();
 }
 async function cancel() {
+  if (!canManage.value) return;
   await api.post(
     `/workspaces/${workspaceID.value}/imports/${jobID}/cancel`,
     {},
@@ -190,12 +198,12 @@ function issueLabel(item: ImportItem) {
   >
     <el-button @click="download">下载原文件</el-button>
     <el-button
-      v-if="!readOnly && ['PENDING', 'PARSING', 'NEEDS_REVIEW'].includes(job?.state ?? '')"
+      v-if="canManage && ['PENDING', 'PARSING', 'NEEDS_REVIEW'].includes(job?.state ?? '')"
       @click="cancel"
       >取消任务</el-button
     >
     <el-button
-      v-if="!readOnly && job?.state === 'COMPLETED'"
+      v-if="canManage && job?.state === 'COMPLETED'"
       type="danger"
       plain
       @click="rollback"
@@ -250,7 +258,7 @@ function issueLabel(item: ImportItem) {
     <p class="muted">图片识别由数据库 Worker 异步执行，本页会自动刷新。</p>
   </section>
   <section v-else-if="job?.items" class="surface-card table-card">
-    <div v-if="conflicts.length" class="toolbar card-padding" style="margin: 0">
+    <div v-if="canReview && conflicts.length" class="toolbar card-padding" style="margin: 0">
       <strong>冲突批量决策</strong>
       <el-button size="small" @click="setAll('KEEP_EXISTING')"
         >全部保留原排班</el-button
@@ -277,6 +285,7 @@ function issueLabel(item: ImportItem) {
           <el-radio-group
             v-if="scope.row.type === 'CONFLICT'"
             v-model="scope.row.decision"
+            :disabled="!canReview"
           >
             <el-radio-button value="KEEP_EXISTING">保留原排班</el-radio-button>
             <el-radio-button value="USE_IMPORTED">使用导入</el-radio-button>
@@ -290,7 +299,7 @@ function issueLabel(item: ImportItem) {
                 : "不写入"
           }}</span>
           <el-button
-            v-if="job.state === 'NEEDS_REVIEW' && scope.row.type !== 'SAME'"
+            v-if="canReview && scope.row.type !== 'SAME'"
             text
             type="primary"
             @click="editing = scope.row"
@@ -300,7 +309,7 @@ function issueLabel(item: ImportItem) {
       </el-table-column>
     </el-table>
     <div
-      v-if="job.state === 'NEEDS_REVIEW'"
+      v-if="canReview"
       class="card-padding"
       style="display: flex; justify-content: flex-end; gap: 10px"
     >

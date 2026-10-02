@@ -398,6 +398,11 @@ paths:
     get:
       tags: [Imports]
       operationId: listImports
+      parameters:
+        - in: query
+          name: scope
+          description: mine 仅返回本人上传；all 或省略时管理员查看团队任务，普通成员仍仅查看本人上传
+          schema: { type: string, enum: [mine, all] }
       responses:
         '200': { $ref: '#/components/responses/Success' }
     post:
@@ -698,6 +703,10 @@ components:
       required: [type, crossDay]
       properties:
         type: { type: string, enum: [SHIFT, TIME_RANGE] }
+        existingSegmentId:
+          type: integer
+          format: int64
+          description: 手工保存时复用同一用户同一日期的既有时间段快照，忽略其他时间段字段；用于保留历史或其他工作区的班次
         shiftId: { type: integer, format: int64 }
         startTime: { type: string, pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' }
         endTime: { type: string, pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' }

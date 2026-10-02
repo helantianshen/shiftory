@@ -9,17 +9,19 @@ import type { Member } from "@/api/types";
 import PageHeader from "@/components/PageHeader.vue";
 import { useSessionStore } from "@/stores/session";
 const session = useSessionStore();
-const workspaceID = computed(() => session.currentWorkspace!.id);
+const workspaceID = computed(() => session.currentWorkspace?.id ?? 0);
 const queryClient = useQueryClient();
 const invitationOpen = ref(false);
 const invitation = reactive({ mode: "email", email: "", username: "", role: "MEMBER" });
 const inviteResult = ref("");
 const members = useQuery({
+  enabled: computed(() => workspaceID.value > 0),
   queryKey: computed(() => ["members", workspaceID.value]),
   queryFn: () =>
     api.get<{ items: Member[] }>(`/workspaces/${workspaceID.value}/members`),
 });
 const invitations = useQuery({
+  enabled: computed(() => workspaceID.value > 0),
   queryKey: computed(() => ["invitations", workspaceID.value]),
   queryFn: () =>
     api.get<{
@@ -33,9 +35,10 @@ const invitations = useQuery({
     }>(`/workspaces/${workspaceID.value}/invitations`),
 });
 async function createInvite() {
+  const role = session.isOwner ? invitation.role : "MEMBER";
   const payload = invitation.mode === "username"
-    ? { username: invitation.username, role: invitation.role }
-    : { email: invitation.email, role: invitation.role };
+    ? { username: invitation.username, role }
+    : { email: invitation.email, role };
   const result = await api.post<{ token: string }>(
     `/workspaces/${workspaceID.value}/invitations`,
     payload,
@@ -176,6 +179,7 @@ async function revoke(id: number) {
       ><el-form-item label="角色"
         ><el-select v-model="invitation.role"
           ><el-option label="普通成员" value="MEMBER" /><el-option
+            v-if="session.isOwner"
             label="管理员"
             value="ADMIN" /></el-select></el-form-item
       ><el-alert

@@ -13,14 +13,14 @@ const workspace = computed(() => session.currentWorkspace!);
 const form = reactive({ name: "", timezone: "Asia/Shanghai" });
 watch(
   workspace,
-  (value) =>
-    Object.assign(form, { name: value.name, timezone: value.timezone }),
+  (value) => { if (value) Object.assign(form, { name: value.name, timezone: value.timezone }); },
   { immediate: true },
 );
 const members = useQuery({
-  queryKey: computed(() => ["members", workspace.value.id]),
+  enabled: computed(() => Boolean(workspace.value)),
+  queryKey: computed(() => ["members", workspace.value?.id]),
   queryFn: () =>
-    api.get<{ items: Member[] }>(`/workspaces/${workspace.value.id}/members`),
+    api.get<{ items: Member[] }>(`/workspaces/${workspace.value?.id}/members`),
 });
 const newOwner = ref<number>();
 const confirmation = ref("");
@@ -48,7 +48,7 @@ async function transfer() {
 }
 async function remove() {
   await ElMessageBox.confirm(
-    "此操作会永久删除工作区内排班、导入与成员关系，无法撤销。",
+    "此操作会永久删除工作区、导入资料与成员关系；个人排班及其修订记录将保留。",
     "最终确认",
     { type: "error" },
   );

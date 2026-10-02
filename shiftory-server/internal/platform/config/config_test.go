@@ -324,7 +324,7 @@ func TestMySQLConnectionParameters(t *testing.T) {
 	if parsed.Addr != "[::1]:3307" || parsed.DBName != "test/name" || parsed.User != "demo" || parsed.Passwd != " p@ss:/?# word " {
 		t.Fatal("connection parameters changed during encoding")
 	}
-	if !parsed.ParseTime || parsed.Loc != time.UTC || !strings.Contains(cfg.MySQL.DSN(), "charset=utf8mb4") {
+	if !parsed.ParseTime || parsed.Loc != time.UTC || parsed.Params["collation_connection"] != "'utf8mb4_0900_as_cs'" || !strings.Contains(cfg.MySQL.DSN(), "charset=utf8mb4") {
 		t.Fatal("fixed connection options missing")
 	}
 	t.Setenv("SHIFTORY_MYSQL_PASSWORD", " env-secret ")

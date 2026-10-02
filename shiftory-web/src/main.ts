@@ -6,6 +6,7 @@ import "element-plus/dist/index.css";
 import { VueQueryPlugin } from "@tanstack/vue-query";
 import App from "./App.vue";
 import router from "./router";
+import { queryClient } from "./api/query-client";
 import { api } from "./api/client";
 import { useSessionStore } from "./stores/session";
 import "./styles/main.scss";
@@ -15,11 +16,7 @@ const pinia = createPinia();
 app.use(pinia);
 app.use(router);
 app.use(ElementPlus, { locale: zhCn });
-app.use(VueQueryPlugin, {
-  queryClientConfig: {
-    defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
-  },
-});
+app.use(VueQueryPlugin, { queryClient });
 
 const session = useSessionStore(pinia);
 api.configureTokenAccess(

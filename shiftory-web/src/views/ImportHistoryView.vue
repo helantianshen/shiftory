@@ -19,13 +19,17 @@ const query = useQuery({
     route.meta.allImports,
   ]),
   queryFn: () =>
-    api.get<{ items: ImportJob[] }>(`/workspaces/${workspaceID.value}/imports`),
+    api.get<{ items: ImportJob[] }>(`/workspaces/${workspaceID.value}/imports?scope=${route.meta.allImports ? "all" : "mine"}`),
   enabled: computed(() => Boolean(workspaceID.value)),
   refetchInterval: 10000,
 });
 const title = computed(() =>
   route.meta.allImports ? "团队导入记录" : "我的导入记录",
 );
+// 详情链接携带任务所在工作区，团队入口使用只读详情路由
+function openImport(row: ImportJob) {
+  router.push({ path: `${route.meta.allImports ? "/admin" : ""}/imports/${row.id}`, query: { workspaceId: workspaceID.value } });
+}
 function stateLabel(state: string) {
   return (
     (
@@ -55,7 +59,7 @@ function stateLabel(state: string) {
     <section class="surface-card table-card">
       <el-table
         :data="query.data.value?.items ?? []"
-        @row-click="(row: ImportJob) => router.push(`/imports/${row.id}`)"
+        @row-click="openImport"
         ><el-table-column
           prop="sourceFilename"
           label="文件"

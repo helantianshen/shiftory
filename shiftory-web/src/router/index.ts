@@ -59,6 +59,11 @@ const router = createRouter({
           meta: { admin: true, allImports: true },
         },
         {
+          path: "admin/imports/:id",
+          component: () => import("@/views/ImportReviewView.vue"),
+          meta: { admin: true, readOnly: true },
+        },
+        {
           path: "admin/workspace",
           component: () => import("@/views/WorkspaceSettingsView.vue"),
           meta: { admin: true },
@@ -75,6 +80,14 @@ router.beforeEach(async (to) => {
   if (!to.meta.public && !session.isAuthenticated)
     return { name: "auth", query: { redirect: to.fullPath } };
   if (to.meta.public && session.isAuthenticated) return "/overview";
+  // 导入链接显式携带工作区，避免打开历史链接时使用另一个工作区
+  if (to.params.id && to.path.includes("/imports/")) {
+    const workspaceID = to.query.workspaceId === undefined ? session.currentWorkspace?.id : Number(to.query.workspaceId);
+    if (!workspaceID || !session.workspaces.some((item) => item.id === workspaceID)) return "/overview";
+    if (session.currentWorkspaceId !== workspaceID) {
+      try { await session.selectWorkspace(workspaceID); } catch { return "/overview"; }
+    }
+  }
   if (to.meta.admin && !session.isAdmin) return "/overview";
   return true;
 });

@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
+import { queryClient } from "@/api/query-client";
 import { api } from "@/api/client";
 
 export type ThemeName =
@@ -54,6 +55,7 @@ export const useSessionStore = defineStore("session", () => {
   const isOwner = computed(() => currentWorkspace.value?.role === "OWNER");
 
   function setSession(nextUser: User, token: string) {
+    if (user.value?.id !== nextUser.id) queryClient.clear();
     user.value = nextUser;
     accessToken.value = token;
   }
@@ -75,6 +77,7 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   function clearSession() {
+    queryClient.clear();
     user.value = null;
     accessToken.value = null;
     workspaces.value = [];
@@ -88,8 +91,8 @@ export const useSessionStore = defineStore("session", () => {
       api.get<Preferences>("/preferences"),
     ]);
     user.value = nextUser;
-    setWorkspaces(workspaceData.items);
     applyPreferences(preferences);
+    setWorkspaces(workspaceData.items);
   }
 
   async function bootstrap() {
@@ -132,11 +135,11 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   async function selectWorkspace(id: number) {
-    currentWorkspaceId.value = id;
     await api.put<Preferences>("/preferences", {
       currentWorkspaceId: id,
       theme: theme.value,
     });
+    currentWorkspaceId.value = id;
   }
 
   async function selectTheme(next: ThemeName) {

@@ -21,6 +21,7 @@ import (
 	"shiftory-server/internal/auth"
 	"shiftory-server/internal/platform/config"
 	"shiftory-server/internal/platform/database"
+	"shiftory-server/internal/testutil"
 )
 
 // TestCoreAPIWorkflow 覆盖注册登录、工作区、班次、排班和日历的 API 主流程
@@ -579,16 +580,16 @@ func jsonAt(t *testing.T, value map[string]any, path ...string) any {
 // openCleanTestDatabase 初始化并清理 HTTP 专用测试数据库，注册连接清理回调
 func openCleanTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	admin, err := database.Open(context.Background(), "root:123456@tcp(127.0.0.1:3306)/mysql?charset=utf8mb4&parseTime=true&loc=UTC")
+	admin, err := database.Open(context.Background(), testutil.MySQLDSN(t, "mysql"))
 	if err != nil {
 		t.Fatalf("open MySQL for test database creation: %v", err)
 	}
-	if _, err := admin.Exec(`CREATE DATABASE IF NOT EXISTS shiftory_test_httpserver CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`); err != nil {
+	if _, err := admin.Exec(`CREATE DATABASE IF NOT EXISTS shiftory_test_httpserver CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs`); err != nil {
 		_ = admin.Close()
 		t.Fatalf("create isolated test database: %v", err)
 	}
 	_ = admin.Close()
-	dsn := "root:123456@tcp(127.0.0.1:3306)/shiftory_test_httpserver?charset=utf8mb4&parseTime=true&loc=UTC"
+	dsn := testutil.MySQLDSN(t, "shiftory_test_httpserver")
 	db, err := database.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open test database: %v", err)

@@ -725,7 +725,7 @@ SELECT id, target_user_id, import_type, state, DATE_FORMAT(period_start, '%Y-%m-
        source_filename, item_count, conflict_count, invalid_count, created_at, completed_at, rolled_back_at
 FROM import_jobs WHERE workspace_id = ?`
 	args := []any{workspaceID}
-	if !requireAdmin(member) {
+	if c.Query("scope") == "mine" || !requireAdmin(member) {
 		query += " AND upload_user_id = ?"
 		args = append(args, currentUserID(c))
 	}
@@ -1086,6 +1086,46 @@ func (s *server) requireImportAccess(c *gin.Context, workspaceID, jobID uint64) 
 		failure(c, http.StatusForbidden, "FORBIDDEN", "无权查看或操作该导入任务", nil)
 		return false
 	}
+	if c.Request.Method != http.MethodGet {
+		var targetUserID uint64
+		if err := s.db.QueryRowContext(c.Request.Context(), "SELECT target_user_id FROM import_jobs WHERE id = ? AND workspace_id = ?", jobID, workspaceID).Scan(&targetUserID); err != nil {
+			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法检查导入目标", nil)
+			return false
+		}
+		if !s.userBelongsToWorkspace(workspaceID, targetUserID) || (targetUserID != currentUserID(c) && !requireAdmin(member)) {
+			failure(c, http.StatusForbidden, "FORBIDDEN", "无权修改目标成员的导入任务", nil)
+			return false
+		}
+	}
+	return true
+}
+
+// requireImportWriterTx 锁定操作者和目标成员，提交期间的权限撤销不能与排班写入交错
+func (s *server) requireImportWriterTx(c *gin.Context, tx *sql.Tx, workspaceID, targetID uint64) bool {
+	rows, err := tx.QueryContext(c.Request.Context(), "SELECT user_id, role, status FROM workspace_members WHERE workspace_id = ? AND user_id IN (?, ?) ORDER BY user_id FOR SHARE", workspaceID, currentUserID(c), targetID)
+	if err != nil {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法锁定导入权限", nil)
+		return false
+	}
+	defer rows.Close()
+	members := map[uint64]membership{}
+	for rows.Next() {
+		var member membership
+		if err := rows.Scan(&member.UserID, &member.Role, &member.Status); err != nil {
+			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取导入权限", nil)
+			return false
+		}
+		members[member.UserID] = member
+	}
+	if err := rows.Err(); err != nil {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取导入权限", nil)
+		return false
+	}
+	actor, target := members[currentUserID(c)], members[targetID]
+	if actor.Status != "ACTIVE" || target.Status != "ACTIVE" || (actor.UserID != targetID && !requireAdmin(actor)) {
+		failure(c, http.StatusForbidden, "FORBIDDEN", "无权修改目标成员的排班", nil)
+		return false
+	}
 	return true
 }
 
@@ -1107,6 +1147,9 @@ func (s *server) commitImport(c *gin.Context) {
 	var importType, state string
 	if err := tx.QueryRowContext(c.Request.Context(), `SELECT target_user_id, import_type, state FROM import_jobs WHERE id = ? AND workspace_id = ? FOR UPDATE`, jobID, workspaceID).Scan(&targetUserID, &importType, &state); err != nil {
 		failure(c, http.StatusNotFound, "IMPORT_NOT_FOUND", "导入任务不存在", nil)
+		return
+	}
+	if !s.requireImportWriterTx(c, tx, workspaceID, targetUserID) {
 		return
 	}
 	// 已完成任务直接返回，避免重复请求再次写入排班和修订
@@ -1208,6 +1251,9 @@ func (s *server) rollbackImport(c *gin.Context) {
 	var state string
 	if err := tx.QueryRowContext(c.Request.Context(), `SELECT target_user_id, state FROM import_jobs WHERE id = ? AND workspace_id = ? FOR UPDATE`, jobID, workspaceID).Scan(&targetUserID, &state); err != nil {
 		failure(c, http.StatusNotFound, "IMPORT_NOT_FOUND", "导入任务不存在", nil)
+		return
+	}
+	if !s.requireImportWriterTx(c, tx, workspaceID, targetUserID) {
 		return
 	}
 	if state == "ROLLED_BACK" {
@@ -1425,6 +1471,29 @@ FROM schedule_segments WHERE schedule_day_id = ? ORDER BY sort_order, id`, dayID
 
 // writeScheduleTx 在调用方事务中创建或更新排班及时间段，事务提交由调用方负责
 func writeScheduleTx(ctx context.Context, tx *sql.Tx, day, existing schedule.Day, found bool) (schedule.Day, error) {
+	// 历史快照可引用已经解散的来源，恢复业务内容时仅保留仍存在的外键
+	if day.SourceImportID != nil {
+		var id uint64
+		err := tx.QueryRowContext(ctx, "SELECT id FROM import_jobs WHERE id = ? FOR SHARE", *day.SourceImportID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			day.SourceImportID = nil
+		} else if err != nil {
+			return schedule.Day{}, err
+		}
+	}
+	for index := range day.Segments {
+		if day.Segments[index].ShiftID == nil {
+			continue
+		}
+		var id uint64
+		err := tx.QueryRowContext(ctx, "SELECT id FROM shifts WHERE id = ? FOR SHARE", *day.Segments[index].ShiftID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			day.Segments[index].ShiftID = nil
+		} else if err != nil {
+			return schedule.Day{}, err
+		}
+	}
+
 	if found {
 		day.ID, day.Version = existing.ID, existing.Version+1
 		_, err := tx.ExecContext(ctx, `
@@ -1447,18 +1516,24 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`, day.WorkspaceID, day.UserID, day.WorkDate.S
 		id, _ := result.LastInsertId()
 		day.ID = uint64(id)
 	}
-	for _, segment := range day.Segments {
+	for index, segment := range day.Segments {
 		var start, end any
 		if segment.StartTime != nil {
 			start, end = segment.StartTime.String()+":00", segment.EndTime.String()+":00"
 		}
-		if _, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 INSERT INTO schedule_segments
     (schedule_day_id, segment_type, shift_id, shift_name_snapshot, shift_code_snapshot, start_time, end_time, cross_day, display_color_snapshot, sort_order, original_label)
 VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''))`, day.ID, segment.Type, segment.ShiftID,
-			segment.ShiftName, segment.ShiftCode, start, end, segment.CrossDay, segment.DisplayColor, segment.SortOrder, segment.OriginalLabel); err != nil {
+			segment.ShiftName, segment.ShiftCode, start, end, segment.CrossDay, segment.DisplayColor, segment.SortOrder, segment.OriginalLabel)
+		if err != nil {
 			return schedule.Day{}, err
 		}
+		segmentID, err := result.LastInsertId()
+		if err != nil {
+			return schedule.Day{}, err
+		}
+		day.Segments[index].ID = uint64(segmentID)
 	}
 	return day, nil
 }

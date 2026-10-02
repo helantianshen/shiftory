@@ -1,16 +1,30 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { Bell, ChevronDown, Menu, Sparkles } from "lucide-vue-next";
 import NavigationMenu from "@/components/NavigationMenu.vue";
 import { useSessionStore, type ThemeName } from "@/stores/session";
 import { sidebarThemeColor } from "@/styles/themes";
+import { ElMessage } from "element-plus";
 import { api } from "@/api/client";
 import { useQuery } from "@tanstack/vue-query";
 const session = useSessionStore();
 const route = useRoute();
 const router = useRouter();
-const workspaceScoped = computed(() => ['/overview', '/calendar', '/admin/schedules', '/admin/members', '/admin/workspace', '/admin/imports'].some((path) => route.path === path || route.path.startsWith(`${path}/`)));
+const workspaceScoped = computed(() => !['/profile', '/invitations'].includes(route.path));
+// 工作区变化不会触发路由守卫，管理权限需要随会话状态同步检查
+watch(() => [route.meta.admin, session.isAdmin], () => {
+  if (route.meta.admin && !session.isAdmin) void router.replace("/overview");
+});
+
+// 导入详情属于固定工作区，切换后返回列表以免复用其他工作区的任务 ID
+async function selectWorkspace(id: number) {
+  try {
+    await session.selectWorkspace(id);
+    if (route.params.id && route.path.includes("/imports/")) await router.replace(route.meta.readOnly && session.isAdmin ? "/admin/imports" : "/imports");
+  } catch { ElMessage.error("工作区切换失败，请重试"); }
+}
+
 const pendingInvitations = useQuery({ queryKey: ["my-invitations"], queryFn: () => api.get<{items: unknown[]}>("/invitations/mine") });
 const sidebarOpen = ref(false);
 const themes: { value: ThemeName; label: string; color: string }[] = [
@@ -57,7 +71,7 @@ async function signOut() {
         <el-dropdown
           v-if="session.workspaces.length && workspaceScoped"
           trigger="click"
-          @command="session.selectWorkspace"
+          @command="selectWorkspace"
           ><button class="workspace-switcher">
             <span class="workspace-dot" />{{ session.currentWorkspace?.name
             }}<ChevronDown :size="15" /></button

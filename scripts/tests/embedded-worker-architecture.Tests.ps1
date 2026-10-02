@@ -28,13 +28,13 @@ $apiSource = Get-Content -LiteralPath (Join-Path $serverRoot "cmd\api\main.go") 
 if ($apiSource -notmatch "if\s+cfg\.AIEnabled" -or $apiSource -notmatch "importjob\.NewRunner") {
     throw "The API command must own the conditional embedded image task runner."
 }
-if ($apiSource -match "database\.Migrate") {
-    throw "The long-running API command must not execute deployment migrations."
+if ($apiSource -notmatch "database\.Migrate") {
+    throw "The API command must synchronize the schema before serving requests."
 }
 
 $migrateSource = Get-Content -LiteralPath (Join-Path $serverRoot "cmd\migrate\main.go") -Raw
 if ($migrateSource -notmatch "database\.Migrate") {
-    throw "The one-shot migrate command must remain the migration owner."
+    throw "The one-shot migrate command must support explicit schema synchronization."
 }
 
 $excludedGit = "!.git/**"

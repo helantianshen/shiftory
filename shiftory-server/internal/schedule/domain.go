@@ -121,7 +121,8 @@ type Segment struct {
 func (s Segment) Validate() error {
 	switch s.Type {
 	case SegmentShift:
-		if s.ShiftID == nil || strings.TrimSpace(s.ShiftName) == "" {
+		// 已持久化的时间段可以保留已删除班次的快照，新的班次引用必须有有效 ID
+		if (s.ShiftID == nil && s.ID == 0) || strings.TrimSpace(s.ShiftName) == "" {
 			return ErrShiftSnapshotRequired
 		}
 	case SegmentTimeRange:

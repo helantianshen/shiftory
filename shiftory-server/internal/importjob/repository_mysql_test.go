@@ -8,6 +8,7 @@ import (
 
 	"shiftory-server/internal/platform/database"
 	"shiftory-server/internal/schedule"
+	"shiftory-server/internal/testutil"
 )
 
 // TestMySQLRepositoryRecoversExpiredLeaseAndCompletesAtomically 验证过期租约可领取及任务预览原子完成
@@ -39,16 +40,16 @@ func TestMySQLRepositoryRecoversExpiredLeaseAndCompletesAtomically(t *testing.T)
 // openWorkerTestDatabase 连接并清理 Worker 专用测试数据库，注册连接清理回调
 func openWorkerTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	admin, err := database.Open(context.Background(), "root:123456@tcp(127.0.0.1:3306)/mysql?charset=utf8mb4&parseTime=true&loc=UTC")
+	admin, err := database.Open(context.Background(), testutil.MySQLDSN(t, "mysql"))
 	if err != nil {
 		t.Fatalf("open MySQL for test database creation: %v", err)
 	}
-	if _, err := admin.Exec(`CREATE DATABASE IF NOT EXISTS shiftory_test_importjob CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`); err != nil {
+	if _, err := admin.Exec(`CREATE DATABASE IF NOT EXISTS shiftory_test_importjob CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs`); err != nil {
 		_ = admin.Close()
 		t.Fatalf("create isolated test database: %v", err)
 	}
 	_ = admin.Close()
-	db, err := database.Open(context.Background(), "root:123456@tcp(127.0.0.1:3306)/shiftory_test_importjob?charset=utf8mb4&parseTime=true&loc=UTC")
+	db, err := database.Open(context.Background(), testutil.MySQLDSN(t, "shiftory_test_importjob"))
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
 	}

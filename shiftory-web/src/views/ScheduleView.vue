@@ -10,7 +10,7 @@ const session = useSessionStore();
     ><PageHeader
       eyebrow="MY SCHEDULE"
       title="我的排班"
-      description="点击日期维护状态、班次、时间段与备注。" /><ScheduleBoard
+      description="个人排班在所有工作区共享；当前工作区决定可用班次与操作权限。" /><ScheduleBoard
       :workspace-id="session.currentWorkspace.id"
       :user-id="session.user!.id"
   /></template>

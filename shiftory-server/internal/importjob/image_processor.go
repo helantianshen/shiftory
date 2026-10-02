@@ -246,7 +246,7 @@ func (p *ImageProcessor) convertEntry(entry imageai.Entry, aliases, shifts map[s
 func (p *ImageProcessor) loadExisting(ctx context.Context, workspaceID, userID uint64, date schedule.Date) (processorSnapshot, uint64, uint64, bool, error) {
 	var snapshot processorSnapshot
 	var id, version uint64
-	err := p.db.QueryRowContext(ctx, `SELECT id, status, note, version FROM schedule_days WHERE workspace_id = ? AND user_id = ? AND work_date = ?`, workspaceID, userID, date.String()).Scan(&id, &snapshot.Status, &snapshot.Note, &version)
+	err := p.db.QueryRowContext(ctx, `SELECT id, status, note, version FROM schedule_days WHERE user_id = ? AND work_date = ?`, userID, date.String()).Scan(&id, &snapshot.Status, &snapshot.Note, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return processorSnapshot{}, 0, 0, false, nil
 	}

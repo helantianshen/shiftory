@@ -8,7 +8,7 @@ import type { Shift } from "@/api/types";
 import PageHeader from "@/components/PageHeader.vue";
 import { useSessionStore } from "@/stores/session";
 const session = useSessionStore();
-const workspaceID = computed(() => session.currentWorkspace!.id);
+const workspaceID = computed(() => session.currentWorkspace?.id ?? 0);
 const dialog = ref(false);
 const editing = ref<number>();
 const form = reactive<{
@@ -33,6 +33,7 @@ const form = reactive<{
   aliases: "",
 });
 const query = useQuery({
+  enabled: computed(() => workspaceID.value > 0),
   queryKey: computed(() => ["shifts", workspaceID.value]),
   queryFn: () =>
     api.get<{ items: Shift[] }>(`/workspaces/${workspaceID.value}/shifts`),

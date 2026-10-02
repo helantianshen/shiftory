@@ -61,7 +61,8 @@ func (c MySQLConfig) DSN() string {
 	value.Addr = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	value.DBName, value.User, value.Passwd = c.Database, c.User, c.Password
 	value.ParseTime, value.Loc = true, time.UTC
-	value.Params = map[string]string{"charset": "utf8mb4"}
+	// 排序规则通过会话变量设置，避免驱动握手阶段对排序规则编号的限制
+	value.Params = map[string]string{"charset": "utf8mb4", "collation_connection": "'utf8mb4_0900_as_cs'"}
 	return value.FormatDSN()
 }
 

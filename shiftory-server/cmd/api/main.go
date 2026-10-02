@@ -48,6 +48,10 @@ func main() {
 	}
 	logger.Info("database connected")
 	defer db.Close()
+	// 表结构同步成功后才装配 Worker 并开放 HTTP 服务
+	if err := database.Migrate(db); err != nil {
+		log.Fatal(err)
+	}
 	store, err := storage.NewLocal(cfg.UploadDir)
 	if err != nil {
 		logger.Error("file storage initialization failed", "error", err)

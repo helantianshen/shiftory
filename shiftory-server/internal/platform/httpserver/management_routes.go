@@ -187,16 +187,20 @@ func (s *server) updateShift(c *gin.Context) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(c.Request.Context(), `
+	var existingID uint64
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT id FROM shifts WHERE id = ? AND workspace_id = ? FOR UPDATE", shiftID, workspaceID).Scan(&existingID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			failure(c, http.StatusNotFound, "SHIFT_NOT_FOUND", "班次不存在", nil)
+		} else {
+			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询班次", nil)
+		}
+		return
+	}
+	_, err = tx.ExecContext(c.Request.Context(), `
 UPDATE shifts SET name = ?, code = ?, start_time = ?, end_time = ?, cross_day = ?, display_color = ?, enabled = ?, sort_order = ?
 WHERE id = ? AND workspace_id = ?`, request.Name, request.Code, start, end, request.CrossDay, request.DisplayColor, *request.Enabled, request.SortOrder, shiftID, workspaceID)
 	if err != nil {
 		failure(c, http.StatusConflict, "SHIFT_CONFLICT", "班次代码冲突", nil)
-		return
-	}
-	affected, _ := result.RowsAffected()
-	if affected != 1 {
-		failure(c, http.StatusNotFound, "SHIFT_NOT_FOUND", "班次不存在", nil)
 		return
 	}
 	// 在同一事务中替换别名，别名冲突会连同班次更新一起回滚
@@ -362,9 +366,17 @@ func (s *server) scheduleHistory(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_DATE", "日期无效", nil)
 		return
 	}
+	period, ok := s.requireScheduleReader(c, workspaceID, userID)
+	if !ok {
+		return
+	}
+	if !period.contains(date) {
+		failure(c, http.StatusForbidden, "FORBIDDEN", "该日期不在成员可见范围内", nil)
+		return
+	}
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT id, before_version, after_version, before_snapshot, after_snapshot, change_type, changed_by, created_at
-FROM schedule_revisions WHERE workspace_id = ? AND user_id = ? AND work_date = ? ORDER BY created_at DESC`, workspaceID, userID, date.String())
+FROM schedule_revisions WHERE user_id = ? AND work_date = ? ORDER BY created_at DESC`, userID, date.String())
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询排班历史", nil)
 		return
@@ -428,19 +440,35 @@ func (s *server) overview(c *gin.Context) {
 	}
 	summary := calendarservice.Aggregate([]schedule.Date{date}, memberIDs, days)[0]
 	var pending int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM import_jobs WHERE workspace_id = ? AND upload_user_id = ? AND state IN ('PENDING', 'PARSING', 'NEEDS_REVIEW')`, workspaceID, currentUserID(c)).Scan(&pending)
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM import_jobs WHERE workspace_id = ? AND upload_user_id = ? AND state IN ('PENDING', 'PARSING', 'NEEDS_REVIEW')`, workspaceID, currentUserID(c)).Scan(&pending); err != nil {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
+		return
+	}
 	parsedDate, _ := time.Parse("2006-01-02", date.String())
 	monthStart := parsedDate.AddDate(0, 0, 1-parsedDate.Day())
 	monthEnd := monthStart.AddDate(0, 1, -1)
 	var scheduledThisMonth int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM schedule_days WHERE user_id = ? AND work_date BETWEEN ? AND ?`, workspaceID, currentUserID(c), monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02")).Scan(&scheduledThisMonth)
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schedule_days WHERE user_id = ? AND work_date BETWEEN ? AND ?`, currentUserID(c), monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02")).Scan(&scheduledThisMonth); err != nil {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
+		return
+	}
 	completeness := float64(scheduledThisMonth) / float64(monthEnd.Day()) * 100
 	var nextWorking, nextRest sql.NullString
-	_ = s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'WORKING' ORDER BY work_date LIMIT 1`, workspaceID, currentUserID(c), date.String()).Scan(&nextWorking)
-	_ = s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'REST' ORDER BY work_date LIMIT 1`, workspaceID, currentUserID(c), date.String()).Scan(&nextRest)
+	if err := s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'WORKING' ORDER BY work_date LIMIT 1`, currentUserID(c), date.String()).Scan(&nextWorking); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
+		return
+	}
+	if err := s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'REST' ORDER BY work_date LIMIT 1`, currentUserID(c), date.String()).Scan(&nextRest); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
+		return
+	}
 	windowEnd := schedule.MustDate(parsedDate.AddDate(0, 1, 0).Format("2006-01-02"))
 	windowDays, _ := dateRange(date, windowEnd, 366)
-	windowSchedules, _ := s.querySchedules(workspaceID, memberIDs, date, windowEnd)
+	windowSchedules, err := s.querySchedules(workspaceID, memberIDs, date, windowEnd)
+	if err != nil {
+		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询排班概览", nil)
+		return
+	}
 	windowSummaries := calendarservice.Aggregate(windowDays, memberIDs, windowSchedules)
 	allRestDates := make([]string, 0, 5)
 	for _, day := range windowSummaries {

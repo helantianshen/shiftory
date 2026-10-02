@@ -1,4 +1,4 @@
-// Package main 提供部署阶段的一次性数据库迁移命令
+// Package main 提供一次性 GORM 表结构同步命令
 package main
 
 import (
@@ -12,7 +12,7 @@ import (
 	"shiftory-server/internal/platform/database"
 )
 
-// main 使用与 API 相同的配置入口连接数据库并执行一次迁移，完成后退出
+// main 使用与 API 相同的配置入口连接数据库并执行一次自动迁移，完成后退出
 func main() {
 	cfg, err := config.Load(os.Args[1:]...)
 	if errors.Is(err, flag.ErrHelp) {
@@ -29,5 +29,5 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		log.Fatal(err)
 	}
-	log.Println("Shiftory migrations are up to date")
+	log.Println("Shiftory schema is up to date")
 }

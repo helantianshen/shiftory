@@ -1,4 +1,4 @@
-// Package database 提供 MySQL 连接池与内嵌 Goose 迁移的执行入口
+// Package database 提供 MySQL 连接池与GORM 表结构同步的执行入口
 package database
 
 import (
