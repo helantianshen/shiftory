@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 
+	"shiftory-server/internal/importjob"
 	"shiftory-server/internal/platform/config"
 	"shiftory-server/internal/platform/database"
 )
@@ -21,7 +22,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	db, err := database.Open(context.Background(), cfg.MySQL.DSN())
+	db, err := database.Open(context.Background(), cfg.Postgres.DSN())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -30,4 +31,11 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Println("Shiftory schema is up to date")
+	if cfg.MigrateLegacyAI {
+		n, err := importjob.MigrateLegacy(context.Background(), db, cfg.Tasks.MaxRounds)
+		if err != nil {
+			log.Fatal("legacy AI migration failed")
+		}
+		log.Printf("legacy AI jobs enqueued: %d", n)
+	}
 }

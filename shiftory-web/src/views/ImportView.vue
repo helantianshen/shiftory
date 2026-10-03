@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, ref, onMounted, watch } from "vue";
+import { useRouter, useRoute } from "vue-router";
 import { useQuery } from "@tanstack/vue-query";
 import dayjs from "dayjs";
 import { ElMessage } from "element-plus";
-import { FileSpreadsheet, ImageUp } from "lucide-vue-next";
+import { FileSpreadsheet, ImageUp, Text } from "lucide-vue-next";
 import { api, formatApiError } from "@/api/client";
 import type { ImportJob, Member } from "@/api/types";
 import EmptyWorkspace from "@/components/EmptyWorkspace.vue";
@@ -12,8 +12,10 @@ import PageHeader from "@/components/PageHeader.vue";
 import { useSessionStore } from "@/stores/session";
 const session = useSessionStore();
 const router = useRouter();
+const route = useRoute();
+const relatedImportId = Number(route.query.relatedImportId) || undefined;
 const workspaceID = computed(() => session.currentWorkspace?.id);
-const type = ref<"excel" | "image">("excel");
+const type = ref<"excel" | "image" | "text">("excel");
 const file = ref<File>();
 const target = ref(session.user?.id);
 const range = ref<[string, string]>([
@@ -21,6 +23,8 @@ const range = ref<[string, string]>([
   dayjs().endOf("month").format("YYYY-MM-DD"),
 ]);
 const instructions = ref("");
+const description = ref("");
+const requestKey = ref(crypto.randomUUID());
 const uploading = ref(false);
 const members = useQuery({
   queryKey: computed(() => ["members", workspaceID.value]),
@@ -28,18 +32,44 @@ const members = useQuery({
     api.get<{ items: Member[] }>(`/workspaces/${workspaceID.value}/members`),
   enabled: computed(() => Boolean(workspaceID.value && session.isAdmin)),
 });
+watch(
+  [type, target, range, instructions, description, file],
+  () => {
+    requestKey.value = crypto.randomUUID();
+  },
+  { deep: true },
+);
+onMounted(async () => {
+  if (!relatedImportId || !workspaceID.value) return;
+  try {
+    const old = await api.get<ImportJob>(
+      `/workspaces/${workspaceID.value}/imports/${relatedImportId}`,
+    );
+    type.value = "text";
+    target.value = old.targetUserId;
+    range.value = [old.periodStart, old.periodEnd];
+    description.value = old.description ?? "";
+  } catch (error) {
+    ElMessage.error(formatApiError(error, "无法读取原描述"));
+  }
+});
+
 function choose(upload: { raw?: File }) {
   file.value = upload.raw;
 }
 async function upload() {
-  if (!file.value || !workspaceID.value) {
-    ElMessage.warning("请选择文件");
+  if (
+    !workspaceID.value ||
+    (type.value !== "text" && !file.value) ||
+    (type.value === "text" && !description.value.trim())
+  ) {
+    ElMessage.warning(type.value === "text" ? "请输入排班描述" : "请选择文件");
     return;
   }
   uploading.value = true;
   try {
     const form = new FormData();
-    form.set("file", file.value);
+    if (file.value) form.set("file", file.value);
     form.set(
       "targetUserId",
       String(session.isAdmin ? target.value : session.user?.id),
@@ -47,14 +77,32 @@ async function upload() {
     form.set("periodStart", range.value[0]);
     form.set("periodEnd", range.value[1]);
     if (type.value === "image") form.set("instructions", instructions.value);
-    const job = await api.upload<ImportJob>(
-      `/workspaces/${workspaceID.value}/imports${type.value === "image" ? "/image" : ""}`,
-      form,
-    );
+    const job =
+      type.value === "text"
+        ? await api.post<ImportJob>(
+            `/workspaces/${workspaceID.value}/imports/text`,
+            {
+              targetUserId: session.isAdmin ? target.value : session.user?.id,
+              periodStart: range.value[0],
+              periodEnd: range.value[1],
+              description: description.value,
+              relatedImportId,
+            },
+            { "Idempotency-Key": requestKey.value },
+          )
+        : await api.upload<ImportJob>(
+            `/workspaces/${workspaceID.value}/imports${type.value === "image" ? "/image" : ""}`,
+            form,
+            { "Idempotency-Key": requestKey.value },
+          );
+    requestKey.value = crypto.randomUUID();
     ElMessage.success(
-      type.value === "image" ? "识别任务已创建" : "导入预览已生成",
+      type.value !== "excel" ? "识别任务已创建" : "导入预览已生成",
     );
-    await router.push({ path: `/imports/${job.id}`, query: { workspaceId: workspaceID.value } });
+    await router.push({
+      path: `/imports/${job.id}`,
+      query: { workspaceId: workspaceID.value },
+    });
   } catch (error) {
     ElMessage.error(formatApiError(error, "上传失败"));
   } finally {
@@ -88,12 +136,12 @@ async function downloadTemplate() {
     ><PageHeader
       eyebrow="IMPORT"
       title="导入排班"
-      description="按当前工作区成员和班次生成预览，确认后写入目标成员的全局排班。"
+      description="生成排班预览，审核后写入目标成员的全局排班"
       ><el-button @click="downloadTemplate"
         >下载 Excel 模板</el-button
       ></PageHeader
     >
-    <div class="grid-2">
+    <div class="grid-3">
       <button
         class="surface-card upload-card"
         :style="type === 'excel' ? 'border-color:var(--accent)' : ''"
@@ -101,7 +149,7 @@ async function downloadTemplate() {
       >
         <FileSpreadsheet :size="28" color="var(--accent)" />
         <h3>上传 Excel 排班表</h3>
-        <p class="muted">支持平台固定模板的 .xlsx 与 .xls 文件。</p></button
+        <p class="muted">使用平台模板<br />支持 .xlsx / .xls</p></button
       ><button
         class="surface-card upload-card"
         :style="type === 'image' ? 'border-color:var(--accent)' : ''"
@@ -109,7 +157,16 @@ async function downloadTemplate() {
       >
         <ImageUp :size="28" color="var(--accent)" />
         <h3>上传排班截图</h3>
-        <p class="muted">由 AI 异步识别，一张图只对应一名成员。</p>
+        <p class="muted">AI 识别单人排班<br />GIF 仅读取首帧</p>
+      </button>
+      <button
+        class="surface-card upload-card"
+        :style="type === 'text' ? 'border-color:var(--accent)' : ''"
+        @click="type = 'text'"
+      >
+        <Text :size="28" color="var(--accent)" />
+        <h3>描述排班规则</h3>
+        <p class="muted">描述星期、班次和例外<br />审核后提交</p>
       </button>
     </div>
     <section class="surface-card card-padding" style="margin-top: 18px">
@@ -139,7 +196,18 @@ async function downloadTemplate() {
             placeholder="例如：蓝色格表示休息，A 代表早班。"
             maxlength="2000"
             show-word-limit /></el-form-item
-        ><el-form-item :label="type === 'image' ? '排班截图' : 'Excel 文件'"
+        ><el-form-item v-if="type === 'text'" label="排班描述"
+          ><el-input
+            v-model="description"
+            type="textarea"
+            :rows="6"
+            maxlength="10000"
+            show-word-limit
+            placeholder="例如：每周一至周五 09:00–18:00 上班，周末休息；10 月 3 日改为 22:00 至次日 06:00。未描述日期会保留为缺失。"
+        /></el-form-item>
+        <el-form-item
+          v-if="type !== 'text'"
+          :label="type === 'image' ? '排班截图' : 'Excel 文件'"
           ><el-upload
             drag
             :auto-upload="false"
@@ -153,9 +221,20 @@ async function downloadTemplate() {
             <div>拖拽文件到此处，或点击选择</div></el-upload
           ></el-form-item
         ><el-button type="primary" :loading="uploading" @click="upload">{{
-          type === "image" ? "创建识别任务" : "生成导入预览"
+          type !== "excel" ? "创建识别任务" : "生成导入预览"
         }}</el-button></el-form
       >
     </section></template
   >
 </template>
+
+<style scoped>
+.upload-card {
+  min-width: 0;
+}
+
+.upload-card .muted {
+  line-height: 1.6;
+  text-wrap: balance;
+}
+</style>

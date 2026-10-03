@@ -523,7 +523,7 @@ XLSReader：使用独立的旧版 XLS 只读解析器
 
 ### 8.3 AI 技术边界
 
-图片识别模块使用 tRPC-Agent-Go 组织模型调用和处理流程。
+AI 模块使用 Eino 组织模型调用和处理流程，完整合同见 docs/specs/ai-import-eino.md。支持图片识别及文字描述排班，统一生成待人工审核的逐日草稿。
 
 AI 的职责是：
 
@@ -607,7 +607,7 @@ AI 输出示例：
 
 ## 九、导入任务
 
-Excel 导入和图片识别统一使用导入任务模型：
+Excel 导入、图片识别和文字生成统一使用导入任务模型：
 
 ```text
 ImportJob
@@ -632,12 +632,14 @@ ROLLED_BACK    已撤销
 首版使用：
 
 ```text
-MySQL import_jobs 表
+PostgreSQL import_jobs / import_outbox
 +
-Go 单体服务内部 Worker
+Asynq / Redis
++
+Go 单体服务内部消费器
 ```
 
-不引入 Redis 和消息队列。
+Redis 负责异步调度与供应商共享并发、熔断；业务状态和预览保存在 PostgreSQL。
 
 前端可以每隔一段时间轮询任务状态。首版没有必要为了低频导入任务单独实现 WebSocket。
 
@@ -1128,8 +1130,8 @@ Element Plus 主要用于快速完成：
 
 ```text
 Gin
-database/sql + go-sql-driver/mysql
-MySQL 8
+database/sql + pgx/v5/stdlib
+PostgreSQL 18
 GORM AutoMigrate
 Excelize
 tRPC-Agent-Go
@@ -1168,7 +1170,7 @@ GORM AutoMigrate
 
 ### 14.3 数据库
 
-使用 MySQL 8.4 LTS。
+使用 PostgreSQL 18。
 
 主要数据表：
 
@@ -1208,7 +1210,7 @@ auth_refresh_tokens
 * 前端只在内存中保存 Access Token，并通过 `Authorization: Bearer <token>` 发送；
 * Refresh Token 使用可轮换的长期 JWT，默认有效期 7 天；
 * Refresh Token 仅通过 `HttpOnly`、`Secure`、`SameSite=Lax`、`Path=/api/v1/auth` Cookie 传输；
-* 每次刷新都轮换 Refresh Token；服务端在 MySQL 中保存令牌族和令牌哈希，用于注销、主动撤销和重放检测；
+* 每次刷新都轮换 Refresh Token；服务端在 PostgreSQL 中保存令牌族和令牌哈希，用于注销、主动撤销和重放检测；
 * JWT 使用非对称签名并携带 `kid`，服务端校验签名算法、`iss`、`aud`、`exp`、`nbf` 和令牌类型；
 * Access Token 只保存稳定的用户身份与令牌标识，不保存工作区角色和权限；每次访问工作区资源时，后端根据当前成员关系重新鉴权；
 * 登录、刷新、修改密码、账号禁用和高风险操作需要记录安全审计；

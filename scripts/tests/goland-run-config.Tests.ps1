@@ -45,7 +45,10 @@ Assert-Equal $api.type "GoApplicationRunConfiguration" "Unexpected API configura
 Assert-Equal $api.working_directory.value '$PROJECT_DIR$/shiftory-server' "Unexpected API working directory."
 Assert-Equal $api.package.value "shiftory-server/cmd/api" "Unexpected API package."
 Assert-Equal $api.parameters.value '--env development --config "$PROJECT_DIR$/config/development.yaml"' "api must select the development YAML through startup arguments."
-if ($null -ne $api.envs) { throw "api must not select a profile through environment variables." }
+$apiEnvironment = @($api.envs.env)
+if ($apiEnvironment.Count -ne 1) { throw "api must only pin its Go toolchain through environment variables." }
+Assert-Equal $apiEnvironment[0].name "GOTOOLCHAIN" "Unexpected API environment variable."
+Assert-Equal $apiEnvironment[0].value "go1.26.8" "API must use Go 1.26.8."
 
 $migrate = Read-RunConfiguration "Shiftory_Migrate.run.xml"
 Assert-Equal $migrate.name "Shiftory Migrate" "Unexpected migration configuration name."

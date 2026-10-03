@@ -19,16 +19,26 @@ export function formatApiError(error: unknown, fallback = "操作失败"): strin
     return error instanceof Error && error.message ? error.message : fallback;
   }
   const details = isRecord(error.body.details) ? error.body.details : undefined;
-  const row = typeof details?.row === "number" && details.row > 0 ? details.row : undefined;
+  const row =
+    typeof details?.row === "number" && details.row > 0
+      ? details.row
+      : undefined;
   const fields = Array.isArray(details?.fields)
-    ? details.fields.filter((field): field is string => typeof field === "string" && field.trim() !== "")
+    ? details.fields.filter(
+        (field): field is string =>
+          typeof field === "string" && field.trim() !== "",
+      )
     : [];
-  const location = row === undefined
-    ? ""
-    : fields.length > 0
-      ? `第 ${row} 行（${fields.join("、")}）：`
-      : `第 ${row} 行：`;
-  const hint = typeof details?.hint === "string" && details.hint.trim() !== "" ? details.hint.trim() : "";
+  const location =
+    row === undefined
+      ? ""
+      : fields.length > 0
+        ? `第 ${row} 行（${fields.join("、")}）：`
+        : `第 ${row} 行：`;
+  const hint =
+    typeof details?.hint === "string" && details.hint.trim() !== ""
+      ? details.hint.trim()
+      : "";
   return `${location}${error.message}${hint ? `。${hint}` : ""}`;
 }
 
@@ -57,8 +67,11 @@ export class ApiClient {
     return this.request<T>(path, { method: "GET" });
   }
 
-  post<T>(path: string, body?: unknown) {
-    return this.request<T>(path, this.jsonOptions("POST", body));
+  post<T>(path: string, body?: unknown, headers?: Record<string, string>) {
+    return this.request<T>(path, {
+      ...this.jsonOptions("POST", body),
+      headers: { "Content-Type": "application/json", ...headers },
+    });
   }
 
   put<T>(path: string, body?: unknown) {
@@ -73,8 +86,8 @@ export class ApiClient {
     return this.request<T>(path, this.jsonOptions("DELETE", body));
   }
 
-  upload<T>(path: string, form: FormData) {
-    return this.request<T>(path, { method: "POST", body: form });
+  upload<T>(path: string, form: FormData, headers?: Record<string, string>) {
+    return this.request<T>(path, { method: "POST", body: form, headers });
   }
 
   private jsonOptions(method: string, body?: unknown): RequestInit {

@@ -120,14 +120,14 @@ func (p memberPeriod) overlaps(start, end schedule.Date) bool {
 // memberPeriods 将成员加入和离开时间转换为工作区时区下的日期
 func (s *server) memberPeriods(workspaceID uint64) ([]memberPeriod, error) {
 	var timezone string
-	if err := s.db.QueryRow(`SELECT timezone FROM workspaces WHERE id = ?`, workspaceID).Scan(&timezone); err != nil {
+	if err := s.db.QueryRow(`SELECT timezone FROM workspaces WHERE id = $1`, workspaceID).Scan(&timezone); err != nil {
 		return nil, err
 	}
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT user_id, joined_at, left_at FROM workspace_members WHERE workspace_id = ? ORDER BY user_id`, workspaceID)
+	rows, err := s.db.Query(`SELECT user_id, joined_at, left_at FROM workspace_members WHERE workspace_id = $1 ORDER BY user_id`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +226,7 @@ func (e *dateRangeError) Error() string { return e.message }
 
 // activeMemberIDs 查询工作区全部有效成员 ID，按 ID 排序
 func (s *server) activeMemberIDs(workspaceID uint64) ([]uint64, error) {
-	rows, err := s.db.Query(`SELECT user_id FROM workspace_members WHERE workspace_id = ? AND status = 'ACTIVE' ORDER BY user_id`, workspaceID)
+	rows, err := s.db.Query(`SELECT user_id FROM workspace_members WHERE workspace_id = $1 AND status = 'ACTIVE' ORDER BY user_id`, workspaceID)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,7 +12,7 @@ import (
 
 // listMyInvitations 按当前用户邮箱列出尚未过期的待接受邀请
 func (s *server) listMyInvitations(c *gin.Context) {
-	rows, err := s.db.QueryContext(c.Request.Context(), `SELECT i.id, i.workspace_id, w.name, i.role, i.expires_at FROM workspace_invitations i JOIN users u ON u.email_normalized = i.email_normalized JOIN workspaces w ON w.id = i.workspace_id WHERE u.id = ? AND i.status = 'PENDING' AND i.expires_at > UTC_TIMESTAMP(6) ORDER BY i.created_at DESC`, currentUserID(c))
+	rows, err := s.db.QueryContext(c.Request.Context(), `SELECT i.id, i.workspace_id, w.name, i.role, i.expires_at FROM workspace_invitations i JOIN users u ON u.email_normalized = i.email_normalized JOIN workspaces w ON w.id = i.workspace_id WHERE u.id = $1 AND i.status = 'PENDING' AND i.expires_at > statement_timestamp() ORDER BY i.created_at DESC`, currentUserID(c))
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询待处理邀请", nil)
 		return
@@ -44,11 +45,11 @@ func (s *server) listInvitations(c *gin.Context) {
 		}
 		return
 	}
-	_, _ = s.db.ExecContext(c.Request.Context(), `UPDATE workspace_invitations SET status = 'EXPIRED' WHERE workspace_id = ? AND status = 'PENDING' AND expires_at < UTC_TIMESTAMP(6)`, workspaceID)
+	_, _ = s.db.ExecContext(c.Request.Context(), `UPDATE workspace_invitations SET status = 'EXPIRED' WHERE workspace_id = $1 AND status = 'PENDING' AND expires_at < statement_timestamp()`, workspaceID)
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT i.id, i.email_normalized, COALESCE(u.username, ''), i.role, i.status, i.invited_by, i.expires_at, i.accepted_by, i.accepted_at, i.created_at
 FROM workspace_invitations i LEFT JOIN users u ON u.email_normalized = i.email_normalized
-WHERE i.workspace_id = ? ORDER BY i.created_at DESC`, workspaceID)
+WHERE i.workspace_id = $1 ORDER BY i.created_at DESC`, workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询邀请", nil)
 		return
@@ -95,7 +96,7 @@ func (s *server) revokeInvitation(c *gin.Context) {
 		}
 		return
 	}
-	result, err := s.db.ExecContext(c.Request.Context(), `UPDATE workspace_invitations SET status = 'REVOKED' WHERE id = ? AND workspace_id = ? AND status = 'PENDING'`, invitationID, workspaceID)
+	result, err := s.db.ExecContext(c.Request.Context(), `UPDATE workspace_invitations SET status = 'REVOKED' WHERE id = $1 AND workspace_id = $2 AND status = 'PENDING'`, invitationID, workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法撤销邀请", nil)
 		return
@@ -137,25 +138,25 @@ func (s *server) transferWorkspace(c *gin.Context) {
 	defer func() { _ = tx.Rollback() }()
 	// 所有者校验与破坏性操作共用事务锁，避免与转让并发时使用过期权限
 	var ownerID uint64
-	if err := tx.QueryRowContext(c.Request.Context(), "SELECT owner_user_id FROM workspaces WHERE id = ? FOR UPDATE", workspaceID).Scan(&ownerID); err != nil || ownerID != currentUserID(c) {
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT owner_user_id FROM workspaces WHERE id = $1 FOR UPDATE", workspaceID).Scan(&ownerID); err != nil || ownerID != currentUserID(c) {
 		failure(c, http.StatusForbidden, "FORBIDDEN", "工作区所有权已变化", nil)
 		return
 	}
 
 	var targetStatus string
-	if err := tx.QueryRowContext(c.Request.Context(), `SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ? FOR UPDATE`, workspaceID, request.NewOwnerUserID).Scan(&targetStatus); err != nil || targetStatus != "ACTIVE" {
+	if err := tx.QueryRowContext(c.Request.Context(), `SELECT status FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE`, workspaceID, request.NewOwnerUserID).Scan(&targetStatus); err != nil || targetStatus != "ACTIVE" {
 		failure(c, http.StatusBadRequest, "INVALID_NEW_OWNER", "新所有者必须是当前有效成员", nil)
 		return
 	}
-	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE workspace_members SET role = 'ADMIN' WHERE workspace_id = ? AND user_id = ? AND role = 'OWNER'`, workspaceID, currentUserID(c)); err != nil {
+	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE workspace_members SET role = 'ADMIN' WHERE workspace_id = $1 AND user_id = $2 AND role = 'OWNER'`, workspaceID, currentUserID(c)); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法更新原所有者角色", nil)
 		return
 	}
-	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE workspace_members SET role = 'OWNER' WHERE workspace_id = ? AND user_id = ?`, workspaceID, request.NewOwnerUserID); err != nil {
+	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE workspace_members SET role = 'OWNER' WHERE workspace_id = $1 AND user_id = $2`, workspaceID, request.NewOwnerUserID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法更新新所有者角色", nil)
 		return
 	}
-	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE workspaces SET owner_user_id = ? WHERE id = ? AND owner_user_id = ?`, request.NewOwnerUserID, workspaceID, currentUserID(c)); err != nil {
+	if _, err := tx.ExecContext(c.Request.Context(), `UPDATE workspaces SET owner_user_id = $1 WHERE id = $2 AND owner_user_id = $3`, request.NewOwnerUserID, workspaceID, currentUserID(c)); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法更新工作区所有者", nil)
 		return
 	}
@@ -184,7 +185,7 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 		ConfirmationName string `json:"confirmationName" binding:"required"`
 	}
 	var name string
-	if err := s.db.QueryRowContext(c.Request.Context(), `SELECT name FROM workspaces WHERE id = ?`, workspaceID).Scan(&name); err != nil {
+	if err := s.db.QueryRowContext(c.Request.Context(), `SELECT name FROM workspaces WHERE id = $1`, workspaceID).Scan(&name); err != nil {
 		failure(c, http.StatusNotFound, "WORKSPACE_NOT_FOUND", "工作区不存在", nil)
 		return
 	}
@@ -193,7 +194,7 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 		return
 	}
 	// 删除数据库索引前收集存储键，文件系统清理需要在提交后单独执行
-	fileRows, err := s.db.QueryContext(c.Request.Context(), `SELECT f.storage_key FROM import_files f JOIN import_jobs j ON j.id = f.import_job_id WHERE j.workspace_id = ?`, workspaceID)
+	fileRows, err := s.db.QueryContext(c.Request.Context(), `SELECT f.storage_key FROM import_files f JOIN import_jobs j ON j.id = f.import_job_id WHERE j.workspace_id = $1`, workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取工作区文件", nil)
 		return
@@ -217,30 +218,33 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 	defer func() { _ = tx.Rollback() }()
 	// 所有者校验与破坏性操作共用事务锁，避免与转让并发时使用过期权限
 	var ownerID uint64
-	if err := tx.QueryRowContext(c.Request.Context(), "SELECT owner_user_id FROM workspaces WHERE id = ? FOR UPDATE", workspaceID).Scan(&ownerID); err != nil || ownerID != currentUserID(c) {
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT owner_user_id FROM workspaces WHERE id = $1 FOR UPDATE", workspaceID).Scan(&ownerID); err != nil || ownerID != currentUserID(c) {
 		failure(c, http.StatusForbidden, "FORBIDDEN", "工作区所有权已变化", nil)
 		return
 	}
 
 	// 按依赖顺序删除关联记录并清理当前工作区偏好，任一失败回滚数据库事务
 	deletions := []string{
-		"DELETE ii FROM import_items ii JOIN import_jobs ij ON ij.id = ii.import_job_id WHERE ij.workspace_id = ?",
-		"DELETE f FROM import_files f JOIN import_jobs ij ON ij.id = f.import_job_id WHERE ij.workspace_id = ?",
-		"DELETE FROM import_jobs WHERE workspace_id = ?",
-		"DELETE FROM shift_aliases WHERE workspace_id = ?",
-		"DELETE FROM shifts WHERE workspace_id = ?",
-		"DELETE FROM workspace_invitations WHERE workspace_id = ?",
-		"DELETE FROM audit_logs WHERE workspace_id = ?",
-		"UPDATE user_preferences SET current_workspace_id = NULL WHERE current_workspace_id = ?",
-		"DELETE FROM workspace_members WHERE workspace_id = ?",
+		"DELETE FROM import_provider_calls c USING import_attempts a, import_jobs j WHERE a.id=c.attempt_id AND j.id=a.job_id AND j.workspace_id=$1",
+		"DELETE FROM import_attempts a USING import_jobs j WHERE j.id=a.job_id AND j.workspace_id=$1",
+		"DELETE FROM import_outbox o USING import_jobs j WHERE j.id=o.job_id AND j.workspace_id=$1",
+		"DELETE FROM import_items ii USING import_jobs ij WHERE ij.id = ii.import_job_id AND ij.workspace_id = $1",
+		"DELETE FROM import_files f USING import_jobs ij WHERE ij.id = f.import_job_id AND ij.workspace_id = $1",
+		"DELETE FROM import_jobs WHERE workspace_id = $1",
+		"DELETE FROM shift_aliases WHERE workspace_id = $1",
+		"DELETE FROM shifts WHERE workspace_id = $1",
+		"DELETE FROM workspace_invitations WHERE workspace_id = $1",
+		"DELETE FROM audit_logs WHERE workspace_id = $1",
+		"UPDATE user_preferences SET current_workspace_id = NULL WHERE current_workspace_id = $1",
+		"DELETE FROM workspace_members WHERE workspace_id = $1",
 	}
 	for _, query := range deletions {
 		if _, err := tx.ExecContext(c.Request.Context(), query, workspaceID); err != nil {
-			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法清理工作区数据", gin.H{"reason": err.Error()})
+			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法清理工作区数据", nil)
 			return
 		}
 	}
-	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM workspaces WHERE id = ? AND owner_user_id = ?`, workspaceID, currentUserID(c)); err != nil {
+	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM workspaces WHERE id = $1 AND owner_user_id = $2`, workspaceID, currentUserID(c)); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法删除工作区", nil)
 		return
 	}
@@ -253,6 +257,6 @@ func (s *server) deleteWorkspace(c *gin.Context) {
 		_ = s.store.Delete(c.Request.Context(), key)
 	}
 	details, _ := json.Marshal(gin.H{"workspaceId": workspaceID, "name": name})
-	_, _ = s.db.ExecContext(c.Request.Context(), `INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target_id, details) VALUES (NULL, ?, 'WORKSPACE_DELETED', 'workspace', ?, ?)`, currentUserID(c), workspaceID, details)
+	_, _ = s.db.ExecContext(c.Request.Context(), `INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target_id, details) VALUES (NULL, $1, 'WORKSPACE_DELETED', 'workspace', $2, $3)`, currentUserID(c), strconv.FormatUint(workspaceID, 10), details)
 	success(c, http.StatusOK, gin.H{"id": workspaceID, "deleted": true})
 }

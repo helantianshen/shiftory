@@ -18,6 +18,7 @@ import (
 
 	_ "golang.org/x/image/webp"
 
+	"shiftory-server/internal/ai"
 	"shiftory-server/internal/importer/imageai"
 	"shiftory-server/internal/platform/storage"
 	"shiftory-server/internal/schedule"
@@ -58,24 +59,51 @@ func (p *ImageProcessor) Process(ctx context.Context, job Job) (Result, error) {
 	if p == nil || p.db == nil || p.store == nil || p.recognizer == nil {
 		return Result{}, errors.New("image processor is not configured")
 	}
-	p.logger.Debug("image recognition processing started", "job_id", job.ID, "attempt", job.AttemptCount, "workspace_id", job.WorkspaceID, "target_user_id", job.TargetUserID, "filename", job.SourceFilename)
+	if job.AttemptID > 0 {
+		if r, ok := p.recognizer.(interface{ Fingerprint() string }); ok {
+			version := imageai.SchemaVersion
+			if job.Description != "" {
+				version = imageai.RuleSchemaVersion
+			}
+			if _, err := p.db.ExecContext(ctx, `UPDATE import_attempts SET config_fingerprint=$1,prompt_version=$2,schema_version=$3 WHERE id=$4`, r.Fingerprint(), imageai.PromptVersion, version, job.AttemptID); err != nil {
+				return Result{}, errors.New("attempt diagnostic persistence failed")
+			}
+		}
+	}
+
+	p.logger.Debug("image recognition processing started", "job_id", job.ID, "attempt", job.AttemptCount, "workspace_id", job.WorkspaceID, "target_user_id", job.TargetUserID)
 	// 读取持久化原文件并再次校验大小和像素数，防止无效输入进入模型
-	reader, err := p.store.Open(ctx, job.StorageKey)
-	if err != nil {
-		return Result{}, fmt.Errorf("open image: %w", err)
+	var content []byte
+	var format string
+	if job.ImportType != "TEXT_AI" {
+		reader, err := p.store.Open(ctx, job.StorageKey)
+		if err != nil {
+			return Result{}, fmt.Errorf("open image: %w", err)
+		}
+		defer reader.Close()
+		content, err = io.ReadAll(io.LimitReader(reader, maxImageBytes+1))
+		if err != nil || int64(len(content)) > maxImageBytes {
+			return Result{}, errors.New("image exceeds size limit or cannot be read")
+		}
+		var config image.Config
+		config, format, err = image.DecodeConfig(bytes.NewReader(content))
+		if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 25_000_000 {
+			return Result{}, errors.New("image is invalid or exceeds 25 megapixels")
+		}
+		p.logger.Debug("image recognition input validated", "job_id", job.ID, "bytes", len(content), "width", config.Width, "height", config.Height, "format", format)
 	}
-	defer reader.Close()
-	content, err := io.ReadAll(io.LimitReader(reader, maxImageBytes+1))
-	if err != nil || int64(len(content)) > maxImageBytes {
-		return Result{}, errors.New("image exceeds size limit or cannot be read")
+	// 从固定班次快照建立映射，提示必须对应快照中的唯一班次
+	var aliases, shifts map[string]processorShift
+	var input frozenInput
+	var err error
+	if len(job.InputSnapshot) > 0 {
+		if err = json.Unmarshal(job.InputSnapshot, &input); err != nil {
+			return Result{}, errors.New("invalid input snapshot")
+		}
+		aliases, shifts = input.Aliases, input.Shifts
+	} else {
+		aliases, shifts, err = p.loadShiftMappings(ctx, job.WorkspaceID)
 	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(content))
-	if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 25_000_000 {
-		return Result{}, errors.New("image is invalid or exceeds 25 megapixels")
-	}
-	p.logger.Debug("image recognition input validated", "job_id", job.ID, "bytes", len(content), "width", config.Width, "height", config.Height, "format", format)
-	// 从当前启用班次建立映射，上传者提示覆盖同名模型输入提示
-	aliases, shifts, err := p.loadShiftMappings(ctx, job.WorkspaceID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -84,16 +112,79 @@ func (p *ImageProcessor) Process(ctx context.Context, job Job) (Result, error) {
 		providedMappings[alias] = shift.Code
 	}
 	for alias, code := range job.MappingHints {
-		providedMappings[alias] = code
+		key := strings.ToLower(strings.TrimSpace(alias))
+		shift, ok := shifts[strings.ToLower(strings.TrimSpace(code))]
+		if !ok {
+			for _, candidate := range shifts {
+				if strings.EqualFold(candidate.Name, code) {
+					shift, ok = candidate, true
+					break
+				}
+			}
+		}
+		if !ok {
+			return Result{}, errors.New("mapping hint unavailable in input snapshot")
+		}
+		if existing, found := aliases[key]; found && existing.ID != shift.ID {
+			return Result{}, errors.New("mapping hint conflicts with input snapshot")
+		}
+		aliases[key] = shift
+		providedMappings[key] = shift.Code
 	}
-	p.logger.Info("image AI request started", "job_id", job.ID, "model", p.modelName, "period_start", job.PeriodStart.String(), "period_end", job.PeriodEnd.String(), "mapping_count", len(providedMappings))
-	draft, err := p.recognizer.Recognize(ctx, imageai.Request{Image: content, ImageFormat: format, Start: job.PeriodStart, End: job.PeriodEnd,
+	p.logger.Info("AI recognition started", "job_id", job.ID, "period_start", job.PeriodStart.String(), "period_end", job.PeriodEnd.String(), "mapping_count", len(providedMappings))
+	if len(content) > 0 {
+		content, format, err = imageai.PrepareImage(content)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	sequence := 0
+	var callID int64
+	recorder := func(c context.Context, call imageai.Call) error {
+		if call.FinishedAt.IsZero() {
+			p.logger.InfoContext(c, "AI provider selected", "job_id", job.ID, "attempt_id", job.AttemptID, "generation", job.Generation, "provider_id", call.ProviderID, "model", call.Model)
+		} else {
+			p.logger.InfoContext(c, "AI provider call finished", "job_id", job.ID, "attempt_id", job.AttemptID, "generation", job.Generation, "provider_id", call.ProviderID, "model", call.Model, "code", call.Code, "http_status", call.HTTPStatus, "duration_ms", call.FinishedAt.Sub(call.StartedAt).Milliseconds())
+		}
+		if job.AttemptID == 0 {
+			return nil
+		}
+		if call.FinishedAt.IsZero() {
+			sequence++
+			e := p.db.QueryRowContext(c, `INSERT INTO import_provider_calls(attempt_id,provider_id,model,sequence,started_at) SELECT $1,$2,$3,$4,$5 FROM import_jobs WHERE id=$6 AND state='PARSING' AND run_generation=$7 AND lease_owner=$8 AND lease_expires_at>statement_timestamp() RETURNING id`, job.AttemptID, call.ProviderID, call.Model, sequence, call.StartedAt, job.ID, job.Generation, job.LeaseOwner).Scan(&callID)
+			if errors.Is(e, sql.ErrNoRows) {
+				return errors.New("execution ownership lost")
+			}
+			if e != nil {
+				return errors.New("call diagnostic persistence failed")
+			}
+			return nil
+		}
+		res, e := p.db.ExecContext(c, `UPDATE import_provider_calls SET finished_at=$1,http_status=$2,code=$3,raw_text=$4,normalized=$5,finish_reason=$6,output_tokens=$7 WHERE id=$8 AND EXISTS(SELECT 1 FROM import_jobs WHERE id=$9 AND state='PARSING' AND run_generation=$10 AND lease_owner=$11 AND lease_expires_at>statement_timestamp())`, call.FinishedAt, call.HTTPStatus, call.Code, call.Raw, nullableJSON(call.Normalized), call.FinishReason, call.OutputTokens, callID, job.ID, job.Generation, job.LeaseOwner)
+		if e != nil {
+			return errors.New("call diagnostic persistence failed")
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			return errors.New("execution ownership lost")
+		}
+		return nil
+	}
+	draft, err := p.recognizer.Recognize(ctx, imageai.Request{Description: job.Description, Timezone: input.Timezone, FixedNow: input.FixedNow, OnCall: recorder, Image: content, ImageFormat: format, Start: job.PeriodStart, End: job.PeriodEnd,
 		Instructions: job.RecognitionInstructions, ShiftMappings: providedMappings})
 	if err != nil {
-		p.logger.Error("image AI request failed", "job_id", job.ID, "model", p.modelName, "error", err)
-		return Result{}, Retryable(err)
+		var pe *ai.ProcessingError
+		code := "AI_PROCESSING_FAILED"
+		if errors.As(err, &pe) {
+			code = pe.Code
+		}
+		p.logger.Error("AI request failed", "job_id", job.ID, "code", code)
+		if errors.As(err, &pe) && pe.Retryable {
+			return Result{}, Retryable(err)
+		}
+		return Result{}, err
 	}
-	p.logger.Info("image AI request succeeded", "job_id", job.ID, "model", p.modelName, "entry_count", len(draft.Entries))
+	p.logger.Info("AI recognition succeeded", "job_id", job.ID, "provider_id", draft.ProviderID, "model", draft.ModelName, "entry_count", len(draft.Entries))
 	if err := draft.Validate(job.PeriodStart, job.PeriodEnd); err != nil {
 		return Result{}, fmt.Errorf("validate AI draft: %w", err)
 	}
@@ -109,18 +200,40 @@ func (p *ImageProcessor) Process(ctx context.Context, job Job) (Result, error) {
 		return Result{}, errors.New("image import period must not exceed 366 days")
 	}
 	result := Result{Items: make([]ResultItem, 0, len(dates)), ItemCount: len(dates), ModelName: p.modelName,
-		PromptVersion: imageai.PromptVersion, SchemaVersion: imageai.SchemaVersion, RawResponse: raw}
+		PromptVersion: imageai.PromptVersion, SchemaVersion: imageai.SchemaVersion, RawResponse: raw, RulesSnapshot: draft.RulesSnapshot}
+	if job.ImportType == "TEXT_AI" {
+		result.SchemaVersion = imageai.RuleSchemaVersion
+	}
+	result.JobIssues, _ = json.Marshal(draft.Issues)
+	if draft.ModelName != "" {
+		result.ModelName = draft.ModelName
+	}
+	if job.Description != "" {
+		result.SchemaVersion = imageai.RuleSchemaVersion
+	}
+	if job.AttemptID > 0 {
+		if _, err := p.db.ExecContext(ctx, `UPDATE import_attempts SET config_fingerprint=$1,prompt_version=$2,schema_version=$3 WHERE id=$4`, draft.ConfigFingerprint, result.PromptVersion, result.SchemaVersion, job.AttemptID); err != nil {
+			return Result{}, errors.New("attempt diagnostic persistence failed")
+		}
+	}
 	for index, date := range dates {
 		entry, found := entries[date]
 		if !found {
-			result.Items = append(result.Items, ResultItem{Date: date, Type: "MISSING", SortOrder: index})
+			issueJSON, _ := json.Marshal(draft.Issues)
+			result.Items = append(result.Items, ResultItem{Date: date, Type: "MISSING", Issues: issueJSON, SortOrder: index})
 			continue
 		}
 		snapshot, issues := p.convertEntry(entry, aliases, shifts)
 		issues = append(issues, entry.Issues...)
+		issues = append(issues, draft.Issues...)
 		itemType := "NEW"
 		if entry.Uncertain || len(issues) > 0 {
 			itemType = "UNCERTAIN"
+		}
+		for _, issue := range issues {
+			if issue.Field == "day" {
+				itemType = "INVALID"
+			}
 		}
 		var draftJSON []byte
 		if snapshot != nil {
@@ -135,14 +248,14 @@ func (p *ImageProcessor) Process(ctx context.Context, job Job) (Result, error) {
 		}
 		if exists {
 			item.ExistingScheduleID, item.ExistingVersion = &existingID, &existingVersion
-			if itemType != "UNCERTAIN" && equivalentProcessorSnapshots(*snapshot, existing) {
+			if itemType != "UNCERTAIN" && itemType != "INVALID" && equivalentProcessorSnapshots(*snapshot, existing) {
 				item.Type = "SAME"
-			} else if itemType != "UNCERTAIN" {
+			} else if itemType != "UNCERTAIN" && itemType != "INVALID" {
 				item.Type = "CONFLICT"
 				result.ConflictCount++
 			}
 		}
-		if item.Type == "UNCERTAIN" {
+		if item.Type == "UNCERTAIN" || item.Type == "INVALID" {
 			result.InvalidCount++
 		}
 		result.Items = append(result.Items, item)
@@ -163,6 +276,7 @@ type processorShift struct {
 
 // processorSnapshot 保存图片预览用于比较的状态、备注和时间段
 type processorSnapshot struct {
+	RuleIDs  []string                   `json:"ruleIds,omitempty"`
 	Status   schedule.Status            `json:"status"`
 	Note     string                     `json:"note"`
 	Segments []processorSegmentSnapshot `json:"segments"`
@@ -185,8 +299,8 @@ type processorSegmentSnapshot struct {
 // loadShiftMappings 加载工作区启用班次，分别建立代码与别名映射
 func (p *ImageProcessor) loadShiftMappings(ctx context.Context, workspaceID uint64) (map[string]processorShift, map[string]processorShift, error) {
 	rows, err := p.db.QueryContext(ctx, `
-SELECT id, name, code, COALESCE(TIME_FORMAT(start_time, '%H:%i'), ''), COALESCE(TIME_FORMAT(end_time, '%H:%i'), ''), cross_day, display_color
-FROM shifts WHERE workspace_id = ? AND enabled = TRUE`, workspaceID)
+SELECT id, name, code, COALESCE(to_char(start_time::interval, 'HH24:MI'), ''), COALESCE(to_char(end_time::interval, 'HH24:MI'), ''), cross_day, display_color
+FROM shifts WHERE workspace_id = $1 AND enabled = TRUE`, workspaceID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -198,12 +312,18 @@ FROM shifts WHERE workspace_id = ? AND enabled = TRUE`, workspaceID)
 			return nil, nil, err
 		}
 		shifts[strings.ToLower(shift.Code)] = shift
-		aliases[strings.ToLower(shift.Code)], aliases[strings.ToLower(shift.Name)] = shift, shift
+		for _, value := range []string{shift.Code, shift.Name} {
+			key := strings.ToLower(strings.TrimSpace(value))
+			if existing, ok := aliases[key]; ok && existing.ID != shift.ID {
+				return nil, nil, errors.New("ambiguous shift mapping")
+			}
+			aliases[key] = shift
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	aliasRows, err := p.db.QueryContext(ctx, `SELECT a.alias, s.id, s.name, s.code, COALESCE(TIME_FORMAT(s.start_time, '%H:%i'), ''), COALESCE(TIME_FORMAT(s.end_time, '%H:%i'), ''), s.cross_day, s.display_color FROM shift_aliases a JOIN shifts s ON s.id = a.shift_id WHERE a.workspace_id = ? AND s.enabled = TRUE`, workspaceID)
+	aliasRows, err := p.db.QueryContext(ctx, `SELECT a.alias, s.id, s.name, s.code, COALESCE(to_char(s.start_time::interval, 'HH24:MI'), ''), COALESCE(to_char(s.end_time::interval, 'HH24:MI'), ''), s.cross_day, s.display_color FROM shift_aliases a JOIN shifts s ON s.id = a.shift_id WHERE a.workspace_id = $1 AND s.enabled = TRUE`, workspaceID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -214,14 +334,18 @@ FROM shifts WHERE workspace_id = ? AND enabled = TRUE`, workspaceID)
 		if err := aliasRows.Scan(&alias, &shift.ID, &shift.Name, &shift.Code, &shift.StartTime, &shift.EndTime, &shift.CrossDay, &shift.DisplayColor); err != nil {
 			return nil, nil, err
 		}
-		aliases[strings.ToLower(strings.TrimSpace(alias))] = shift
+		key := strings.ToLower(strings.TrimSpace(alias))
+		if existing, ok := aliases[key]; ok && existing.ID != shift.ID {
+			return nil, nil, errors.New("ambiguous shift alias")
+		}
+		aliases[key] = shift
 	}
 	return aliases, shifts, aliasRows.Err()
 }
 
 // convertEntry 将模型条目映射为班次快照，并返回需要人工处理的问题
 func (p *ImageProcessor) convertEntry(entry imageai.Entry, aliases, shifts map[string]processorShift) (*processorSnapshot, []imageai.Issue) {
-	snapshot := &processorSnapshot{Status: schedule.Status(entry.Status), Note: strings.TrimSpace(entry.Note), Segments: make([]processorSegmentSnapshot, 0, len(entry.Segments))}
+	snapshot := &processorSnapshot{RuleIDs: entry.RuleIDs, Status: schedule.Status(entry.Status), Note: strings.TrimSpace(entry.Note), Segments: make([]processorSegmentSnapshot, 0, len(entry.Segments))}
 	issues := make([]imageai.Issue, 0)
 	for index, item := range entry.Segments {
 		segment := processorSegmentSnapshot{Type: schedule.SegmentType(item.Type), StartTime: item.StartTime, EndTime: item.EndTime, CrossDay: item.CrossDay, SortOrder: index, OriginalLabel: item.OriginalLabel}
@@ -239,6 +363,30 @@ func (p *ImageProcessor) convertEntry(entry imageai.Entry, aliases, shifts map[s
 		}
 		snapshot.Segments = append(snapshot.Segments, segment)
 	}
+	day := schedule.Day{WorkDate: schedule.Date(entry.Date), Status: snapshot.Status}
+	for _, part := range snapshot.Segments {
+		seg := schedule.Segment{Type: part.Type, ShiftID: part.ShiftID, ShiftName: part.ShiftName, CrossDay: part.CrossDay}
+		if part.StartTime != "" {
+			v, e := schedule.ParseClock(part.StartTime)
+			if e != nil {
+				issues = append(issues, imageai.Issue{Field: "segments", Message: "开始时间无效"})
+			} else {
+				seg.StartTime = &v
+			}
+		}
+		if part.EndTime != "" {
+			v, e := schedule.ParseClock(part.EndTime)
+			if e != nil {
+				issues = append(issues, imageai.Issue{Field: "segments", Message: "结束时间无效"})
+			} else {
+				seg.EndTime = &v
+			}
+		}
+		day.Segments = append(day.Segments, seg)
+	}
+	if err := day.Validate(); err != nil && !errors.Is(err, schedule.ErrShiftSnapshotRequired) {
+		issues = append(issues, imageai.Issue{Field: "day", Message: "排班领域校验失败：" + err.Error()})
+	}
 	return snapshot, issues
 }
 
@@ -246,7 +394,7 @@ func (p *ImageProcessor) convertEntry(entry imageai.Entry, aliases, shifts map[s
 func (p *ImageProcessor) loadExisting(ctx context.Context, workspaceID, userID uint64, date schedule.Date) (processorSnapshot, uint64, uint64, bool, error) {
 	var snapshot processorSnapshot
 	var id, version uint64
-	err := p.db.QueryRowContext(ctx, `SELECT id, status, note, version FROM schedule_days WHERE user_id = ? AND work_date = ?`, userID, date.String()).Scan(&id, &snapshot.Status, &snapshot.Note, &version)
+	err := p.db.QueryRowContext(ctx, `SELECT id, status, note, version FROM schedule_days WHERE user_id = $1 AND work_date = $2`, userID, date.String()).Scan(&id, &snapshot.Status, &snapshot.Note, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return processorSnapshot{}, 0, 0, false, nil
 	}
@@ -254,9 +402,9 @@ func (p *ImageProcessor) loadExisting(ctx context.Context, workspaceID, userID u
 		return processorSnapshot{}, 0, 0, false, err
 	}
 	rows, err := p.db.QueryContext(ctx, `
-SELECT segment_type, shift_id, COALESCE(shift_name_snapshot, ''), COALESCE(shift_code_snapshot, ''), COALESCE(TIME_FORMAT(start_time, '%H:%i'), ''),
-       COALESCE(TIME_FORMAT(end_time, '%H:%i'), ''), cross_day, COALESCE(display_color_snapshot, ''), sort_order, COALESCE(original_label, '')
-FROM schedule_segments WHERE schedule_day_id = ? ORDER BY sort_order, id`, id)
+SELECT segment_type, shift_id, COALESCE(shift_name_snapshot, ''), COALESCE(shift_code_snapshot, ''), COALESCE(to_char(start_time::interval, 'HH24:MI'), ''),
+       COALESCE(to_char(end_time::interval, 'HH24:MI'), ''), cross_day, COALESCE(display_color_snapshot, ''), sort_order, COALESCE(original_label, '')
+FROM schedule_segments WHERE schedule_day_id = $1 ORDER BY sort_order, id`, id)
 	if err != nil {
 		return processorSnapshot{}, 0, 0, false, err
 	}
@@ -311,4 +459,33 @@ func datesBetween(start, end schedule.Date) ([]schedule.Date, error) {
 		current = current.AddDate(0, 0, 1)
 	}
 	return dates, nil
+}
+
+type frozenInput struct {
+	Timezone string                    `json:"timezone"`
+	FixedNow time.Time                 `json:"fixedNow"`
+	Aliases  map[string]processorShift `json:"aliases"`
+	Shifts   map[string]processorShift `json:"shifts"`
+}
+
+func FreezeInput(ctx context.Context, db *sql.DB, workspaceID uint64) ([]byte, error) {
+	p := &ImageProcessor{db: db}
+	aliases, shifts, err := p.loadShiftMappings(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	var zone string
+	if err = db.QueryRowContext(ctx, `SELECT timezone FROM workspaces WHERE id=$1`, workspaceID).Scan(&zone); err != nil {
+		return nil, err
+	}
+	if _, err = time.LoadLocation(zone); err != nil {
+		return nil, errors.New("invalid workspace timezone")
+	}
+	return json.Marshal(frozenInput{zone, time.Now().UTC(), aliases, shifts})
+}
+func nullableJSON(data []byte) any {
+	if len(data) == 0 {
+		return nil
+	}
+	return data
 }

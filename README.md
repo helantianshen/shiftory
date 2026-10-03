@@ -5,7 +5,7 @@ Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录
 ## 技术结构
 
 - 前端：Vue 3、TypeScript、Vite、Vue Router、Pinia、TanStack Vue Query、Element Plus、SCSS。
-- 后端：Go 1.27、Gin、`database/sql`、MySQL 8、GORM AutoMigrate、Excelize、tRPC-Agent-Go。
+- 后端：Go 1.26.8、Gin、`database/sql`、PostgreSQL 18、GORM AutoMigrate、Excelize、Eino、Asynq、Redis。
 - 认证：Ed25519 Access JWT + 轮换 Refresh JWT。Access Token 只驻留前端内存；Refresh Token 只在 HttpOnly Cookie 中，刷新和注销另有 CSRF 双提交校验。
 - 工程形态：单仓库、前后端分离、模块化单体；API 进程内置图片识别 Worker，迁移命令独立执行。
 
@@ -19,7 +19,7 @@ Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录
 
 ## 本地启动
 
-前置环境：Go 1.27.1、Node.js 24（含 npm）、MySQL 8.0.16+（Compose 使用 8.4）。后端使用 **进程环境变量 + YAML 配置文件**，前端继续使用 Vite 原有的 env 文件加载方式，不读取 YAML。
+前置环境：Go 1.26.8、Node.js 24（含 npm）、PostgreSQL 18。后端使用 **进程环境变量 + YAML 配置文件**，前端继续使用 Vite 原有的 env 文件加载方式，不读取 YAML。
 
 后端 API 和迁移程序接受相同的启动参数：
 
@@ -29,9 +29,11 @@ Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录
 | `--env development` | 开发模式 |
 | `--config /path/to/config.yaml` | 显式指定 YAML 文件；不改变 `--env` 选择的模式 |
 
-后端配置优先级为：**非空进程环境变量 > 所选 YAML > 内置默认值**。YAML 使用 `log`、`server`、`mysql`、`jwt`、`ai`、`storage`、`worker` 分组，环境变量按 `SHIFTORY_<分组>_<字段>` 命名，例如 `ai.model` 对应 `SHIFTORY_AI_MODEL`、`server.port` 对应 `SHIFTORY_SERVER_PORT`。空白环境变量沿用文件值；布尔值 `false` 可正常覆盖 `true`。密钥和数据库密码保留原始空白，YAML 中显式空密码表示无密码。可配置项列在 `config/development.example.yaml` 和 `config/production.example.yaml` 中。
+后端和独立 AI 测试模块统一使用 Go 1.26.8。Linux 构建脚本、PowerShell 开发启动器及 Docker 固定该版本。若系统默认 Go 较新，直接执行 Go 命令前，在当前终端设置 `export GOTOOLCHAIN=go1.26.8`（Bash）或 `$env:GOTOOLCHAIN = "go1.26.8"`（PowerShell）；`go.mod` 的最低版本要求不会自动将较新的系统工具链降级。GoLand 项目 SDK 也应选择 1.26.8。
 
-MySQL 使用 `mysql.host`（IP 或主机名）、`mysql.port`、`mysql.database`、`mysql.user`、`mysql.password`，对应 `SHIFTORY_MYSQL_HOST`、`SHIFTORY_MYSQL_PORT`、`SHIFTORY_MYSQL_DATABASE`、`SHIFTORY_MYSQL_USER`、`SHIFTORY_MYSQL_PASSWORD`。程序统一生成连接串，固定 `utf8mb4`、时间解析与 UTC 时区，不接受运行时 DSN、字符集或时区配置。`server.port` 是监听所有网卡的端口；服务与数据库端口范围均为 1–65535。旧平铺 YAML 会报错，旧 `SHIFTORY_HTTP_ADDR`、`SHIFTORY_DATABASE_DSN`、`SHIFTORY_WEB_DIR`、`SHIFTORY_UPLOAD_DIR`、`SHIFTORY_PUBLIC_ORIGIN` 不再读取。
+后端配置优先级为：**非空进程环境变量 > 所选 YAML > 内置默认值**。YAML 使用 `log`、`server`、`postgres`、`jwt`、`ai`、`redis`、`tasks`、`storage` 分组（旧 `worker` 字段仅兼容配置加载），环境变量按 `SHIFTORY_<分组>_<字段>` 命名，例如供应商 `relay` 的 `api_key` 对应 `SHIFTORY_AI_PROVIDERS_RELAY_API_KEY`、`server.port` 对应 `SHIFTORY_SERVER_PORT`。空白环境变量沿用文件值；布尔值 `false` 可正常覆盖 `true`。密钥和数据库密码保留原始空白，YAML 中显式空密码表示无密码。可配置项列在 `config/development.example.yaml` 和 `config/production.example.yaml` 中。
+
+PostgreSQL 使用 `postgres.host`、`postgres.port`、`postgres.database`、`postgres.user`、`postgres.password`、`postgres.sslmode`，对应 `SHIFTORY_POSTGRES_*` 环境变量。默认端口 5432，程序编码连接串，会话时区固定 UTC，不接受运行时 DSN。`sslmode` 支持 `disable`、`require`、`verify-ca`、`verify-full`；本机容器用 `disable`，远程可信证书连接用 `verify-full`。旧 `mysql` YAML 分组不兼容，应明确更新配置。`server.port` 为监听所有网卡的端口，端口范围 1–65535。旧平铺 YAML 和旧地址／DSN环境变量不读取。
 
 未指定 `--config` 时，程序依次查找当前工作目录、父目录和祖父目录下的 `config/<模式>.yaml`，只加载首个命中文件，不合并其他文件。未发现文件时允许使用环境变量和内置默认值；显式路径不存在、YAML 格式错误、未知键或非法配置值会直接报错。YAML 中的相对文件路径仍相对于**进程工作目录**，生产部署建议全部使用绝对路径。后端不再读取任何 env 文件，`SHIFTORY_ENV` 和 `SHIFTORY_ENV_FILE` 不再生效。
 
@@ -80,17 +82,15 @@ Copy-Item config/production.example.yaml config/production.yaml
 
 启动参数 `--env` 支持 `development` 和 `production`，默认是 `production`。环境选择只影响自动发现的配置文件和日志默认值：开发环境默认 `debug` + 文本日志，生产环境默认 `info` + JSON 日志。可通过 `SHIFTORY_LOG_LEVEL=debug|info|warn|error` 和 `SHIFTORY_LOG_FORMAT=text|json` 单独覆盖。API 启动时会打印配置摘要、数据库、JWT、Worker 和监听地址；每次 HTTP 调用会记录请求 ID、方法、路径、状态和耗时，图片上传还会记录校验、存储和任务创建阶段。日志不会记录 API Key、令牌或图片内容。
 
-图片 AI Worker 运行在 API 进程内。设置 `SHIFTORY_AI_ENABLED=true`、模型名称和 API Key 后启用；未启用时普通排班和 Excel 导入仍可用。`SHIFTORY_WORKER_MAX_CONCURRENCY` 控制同时处理的图片任务数，`SHIFTORY_WORKER_LEASE` 控制任务处理租约，`SHIFTORY_WORKER_POLL_INTERVAL` 控制无唤醒信号时的数据库扫描周期。
+控制台日志使用 `log.format: text`，按时间、级别、消息和有序字段展示。DEBUG 为青色、INFO 为绿色、WARN 为黄色、ERROR 为红色，字段使用“标签: 值”，HTTP 请求优先展示方法、路径、状态和耗时，AI 路由优先展示供应商和模型。设置 `NO_COLOR=1` 或 `TERM=dumb` 可关闭颜色；重定向文本日志时可使用 `NO_COLOR=1`。`log.format: json` 继续输出无颜色的结构化日志。
 
-如本机没有 MySQL，可在仓库根目录启动容器：
+AI 异步处理运行在 API 进程内，Eino 负责模型调用，Asynq 使用 Redis 调度任务，PostgreSQL 保存任务、Outbox、执行记录和预览。`tasks.concurrency` 控制任务并发，各供应商的 `max_concurrency` 通过 Redis 在进程间共享。关闭 `ai.enabled` 时停止新 AI 请求及消费，已有草稿仍可审查。
 
-```powershell
-$env:COMPOSE_DISABLE_ENV_FILE = "1" # Compose 只使用当前进程环境变量
-$env:MYSQL_ROOT_PASSWORD = "123456" # 与开发 YAML 示例一致；生产环境必须自行设置
-docker compose up -d mysql
-```
+本机 PostgreSQL 为全局共享容器 `postgres`，监听 `127.0.0.1:5432`，持久卷为 `postgres-data`。管理 Compose 和密码文件在 `~/.config/shared-services/postgres/`，不属于本仓库。各项目使用独立数据库和账号；当前 Shiftory 应用账号 `shiftory` 仅访问 `shiftory` 数据库，实际密码保存在被 Git 忽略的开发 YAML 中。无需另外启动项目数据库容器。
 
-默认数据库连接为 `root:123456@127.0.0.1:3306/shiftory`。首次启动前创建数据库（容器配置会自动创建），然后运行：
+仓库 `compose.yaml` 只部署应用和 Redis，通过外部网络 `${POSTGRES_NETWORK:-shared-postgres_default}` 连接共享 PostgreSQL；运行前提供 `SHIFTORY_POSTGRES_PASSWORD`，可用 `SHIFTORY_POSTGRES_HOST`、`SHIFTORY_POSTGRES_USER`、`SHIFTORY_POSTGRES_DATABASE` 覆盖连接目标。删除项目 Compose 不会删除共享数据库容器和数据卷。
+
+首次启动前由共享实例管理员创建独立 UTF8 数据库和应用账号，然后运行：
 
 ```powershell
 cd shiftory-server
@@ -109,7 +109,7 @@ pnpm dev
 
 ### Linux 单机部署
 
-Linux 单机只需要运行 API 二进制，图片 AI Worker 会在同一进程内启动。将生产 YAML 放到 `/etc/shiftory/production.yaml`，通过 `--config` 指定其绝对路径；`SHIFTORY_STORAGE_UPLOAD_DIR`、`SHIFTORY_SERVER_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
+Linux 单机运行 API 二进制并连接 PostgreSQL、Redis，AI 消费器会在同一进程内启动。将生产 YAML 放到 `/etc/shiftory/production.yaml`，通过 `--config` 指定其绝对路径；`SHIFTORY_STORAGE_UPLOAD_DIR`、`SHIFTORY_SERVER_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
 
 ```bash
 ./scripts/start-linux.sh build
@@ -131,30 +131,44 @@ COMPOSE_DISABLE_ENV_FILE=1 docker compose up -d --build
 COMPOSE_DISABLE_ENV_FILE=1 docker compose config --quiet
 ```
 
+.env 文件不用于后端配置。Compose 可通过进程变量 `SHIFTORY_CONFIG_FILE` 只读挂载实际生产 YAML（默认挂载无密钥的生产样例）；供应商密钥可用 `SHIFTORY_AI_PROVIDERS_<ID>_API_KEY` 覆盖。
+
 Compose 自身具有隐式读取根目录 `.env` 的行为，因此部署命令显式设置 `COMPOSE_DISABLE_ENV_FILE=1`。这不会禁用前端 Vite 读取 `shiftory-web/.env*`。
 
-## 图片 AI Worker
+## AI 导入与文字排班
 
-设置 OpenAI 兼容视觉模型参数后，启动 API 即会同时启动内置 Worker：
+在实际 `config/development.yaml` 中配置 `ai`、`redis`、`tasks`，格式见 [开发样例](config/development.example.yaml) 和 [AI Spec](docs/specs/ai-import-eino.md)。本地已填写的供应商配置已合并到忽略的开发配置；独立 `ai.development.yaml` 仍供联网测试使用，两份文件不会自动合并，后续修改需同步到正式开发配置。正式进程在启动时读取配置，修改供应商或 `order` 后重启生效。
 
-```powershell
-$env:SHIFTORY_AI_MODEL = "your-vision-model"
-$env:SHIFTORY_AI_BASE_URL = "https://your-provider.example/v1"
-$env:SHIFTORY_AI_API_KEY = "your-key"
-$env:SHIFTORY_AI_ENABLED = "true"
-go run ./cmd/api --env development
+供应商优先级按唯一正整数 `order` 升序，默认字节、中转站、DeepSeek。字节使用 Eino Ark，其余使用 OpenAI Chat Completions。各模型单独配置图片／文字能力、格式、超时及并发；错误自动切换，整轮失败后按有限预算重试。无需另加协程池。
+
+图片和文字请求只产生逐日草稿；文字先提取规则，再按日历确定性展开。没有描述的日期保持缺失，未知班次及冲突供人工修改。提交携带 `expectedReviewVersion`，在事务中核对原排班版本；撤销校验导入后的版本和来源，拒绝覆盖后续修改。详情可读取各轮供应商诊断及受权限保护的原文。
+
+Redis 故障时新任务保存在 PostgreSQL Outbox，连接恢复后继续投递。正常停机等待正在处理的任务；强杀后由 Asynq 与业务租约恢复，可能重复请求模型但不会绕过执行隔离重复写入草稿。Redis 数据彻底丢失时不自动重建队列，失联任务标记失败后可人工重试。Compose 提供 AOF everysec、noeviction、持久卷；本地共享测试 Redis 的 AOF 未开启，没有调整共享容器。
+
+旧 Worker 必须停止后，才可显式接纳尚未投递的历史图片任务：
+
+```bash
+cd shiftory-server
+go run ./cmd/migrate --env development --config ../config/development.yaml --migrate-ai-jobs
 ```
 
-图片原文件以内联多模态消息发送；模型被要求按严格 JSON Schema 输出，温度为 0。内置 Worker 使用 MySQL 租约、心跳、重试延迟和 `SKIP LOCKED` 领取任务，并通过固定容量的 ants 协程池限制并发。模型结果只生成预览，不会直接写入正式排班；不确定项必须由用户人工修正或保持跳过。AI 供应商的在线连通性需要使用实际密钥单独验收。
+该命令不自动迁移正在持有有效租约的任务，不改变已审核草稿。历史 `ai_raw_response` 仍保存旧兼容预览，新模型原文保存在 `import_provider_calls.raw_text`。`/health/ai` 与 `/metrics/ai` 提供队列就绪及无内容的聚合指标。
 
 ## 验证
 
-后端集成测试需要已有可访问的 MySQL，会创建专用测试库。`SHIFTORY_TEST_DATABASE_DSN` 供全部后端数据库集成测试复用连接凭据与地址；测试只使用 `shiftory_test`、`shiftory_test_httpserver`、`shiftory_test_importjob` 专用库，不使用 DSN 指定的业务库。该变量仅供测试使用，需通过进程环境变量提供，不从运行时 YAML 或 env 文件读取：
+后端集成测试需要预先创建 `shiftory_test`、`shiftory_test_httpserver`、`shiftory_test_importjob` 数据库，由独立测试账号拥有。本机已经配置这些库。`SHIFTORY_TEST_DATABASE_DSN` 仅通过进程环境提供连接参数；测试强制选择三个白名单库，不使用 DSN 指定的业务库。结构测试重建 `shiftory_test` 的 public schema，其他测试通过外键安全的 TRUNCATE 清理各自库。应用账号不拥有测试库，连接失败会使测试失败。
 
-```powershell
+本机测试凭据位于仓库外的 `~/.config/shared-services/postgres/shiftory-test-dsn`，权限为 0600。Linux 验证：
+
+```bash
 cd shiftory-server
-go test ./... -count=1
+export SHIFTORY_TEST_DATABASE_DSN="$(cat ~/.config/shared-services/postgres/shiftory-test-dsn)"
+GOTOOLCHAIN=go1.26.8 go test ./... -count=1
+GOTOOLCHAIN=go1.26.8 go test -race ./... -count=1
+GOTOOLCHAIN=go1.26.8 go vet ./...
 ```
+
+PowerShell 或其他机器需自行设置相同变量，使用其测试账号的 PostgreSQL 连接串。真实外部模型测试需显式设置 `SHIFTORY_LIVE_AI=true`，默认不发送模型请求。
 
 前端验证：
 
@@ -187,19 +201,19 @@ API 启动后，可从仓库根目录运行真实 HTTP 验收：
 新建空数据库后，可直接启动 API 获得空表，再通过注册页面创建用户；需要开发初始数据时，在第一次启动 API **之前**导入完整脚本：
 
 ```bash
-mysql -h 127.0.0.1 -P 13306 -u root -p < shiftory-server/sql/init.sql
+psql -h 127.0.0.1 -p 5432 -U shiftory -d shiftory -v ON_ERROR_STOP=1 -f shiftory-server/sql/init.sql
 ```
 
-端口和用户以本地配置为准。脚本包含全部 15 张表、索引、外键、状态约束，以及以下开发数据：
+端口和用户以本地配置为准。脚本包含全部 18 张表、索引、外键、状态约束，以及以下开发数据：
 
 - 登录用户名：`admin`，邮箱：`admin@example.com`，密码：`ShiftoryDev123!`（数据库保存 Argon2id 摘要）
 - 工作区：`开发工作区`；初始用户为该工作区所有者，并具有默认主题、当前工作区偏好和早／中／晚三种预设班次
 - 项目不存在全局管理员角色；该用户的管理范围限于其所属工作区
 
-脚本会创建并选择 `shiftory` 数据库，仅供空库执行，不自动重置现有数据库，不在服务启动时重复导入。请在使用后修改开发初始密码。初始化 SQL 导入后可直接启动 API，结构同步不会覆盖初始账号。
+数据库由实例管理员预先创建，脚本在指定数据库中创建结构并初始化自增序列，仅供空库执行，不自动重置现有数据库，不在服务启动时重复导入。请在使用后修改开发初始密码。初始化 SQL 导入后可直接启动 API，结构同步不会覆盖初始账号。
 
 旧版 Goose SQL 和依赖已移除。AutoMigrate 不会删除废弃字段，也不负责字段重命名或旧约束的数据转换；已有开发库应先确认需保留的数据，再人工处理不兼容结构，不能通过自动清库来解决。模型结构变更时须同步更新初始化 SQL，并运行数据库集成测试验证二者一致。
 
-项目统一使用 `utf8mb4_0900_as_cs`：大小写和重音字符均区分（`A` 与 `a`、`e` 与 `é` 均不相等）。应用连接、建表、初始化脚本和 Compose 默认保持一致。仅修改数据库默认排序规则或 GORM 新表选项不会转换已有文本列；已有库应单独检查并转换表结构，本项目不会在每次启动时重建表。
-
 数据库排序规则不改变应用层规范化：用户名、邮箱和班次别名仍按现有规则转小写、去首尾空白，因此对应业务匹配不会自动变成大小写敏感。
+
+PostgreSQL 使用 UTF8 与区分大小写、重音的字符串比较；数据库实例使用 C locale。绝对时间使用 timestamptz，排班 date／time 保留业务含义。GORM 同步后安装 updated_at 触发器，原始 SQL 更新同样维护更新时间。项目不支持 MySQL 或双数据库运行。

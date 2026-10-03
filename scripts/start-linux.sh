@@ -20,6 +20,7 @@ EOF
 
 # build 在后端目录构建 API 与一次性迁移程序到指定输出目录
 build() {
+  export GOTOOLCHAIN=go1.26.8
   mkdir -p "$BIN_DIR"
   (cd "$SERVER_ROOT" && go build -o "$BIN_DIR/shiftory-api" ./cmd/api)
   (cd "$SERVER_ROOT" && go build -o "$BIN_DIR/shiftory-migrate" ./cmd/migrate)

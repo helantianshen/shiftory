@@ -1,0 +1,74 @@
+# 此文件供独立联网测试使用；正式 API 的 ai/redis/tasks 使用相同结构，需配置在 development.yaml
+# 每个模型使用唯一 id，order 为正整数且不可重复，数值越小越优先
+# 修改配置后在下一次测试调用时生效，配置不包含真实凭据
+ai:
+  enabled: true
+  round_timeout: 5m
+  providers:
+    - id: doubao
+      supplier: doubao
+      kind: ark
+      enabled: true
+      order: 10
+      base_url: https://ark.cn-beijing.volces.com/api/v3
+      api_key: ""
+      model: doubao-seed-character-260628
+      image_enabled: true
+      text_enabled: true
+      response_format: prompt
+      thinking: disabled
+      request_timeout: 60s
+      max_concurrency: 2
+    - id: relay
+      supplier: relay
+      kind: openai
+      enabled: true
+      order: 20
+      base_url: ""
+      api_key: ""
+      model: ""
+      image_enabled: true
+      text_enabled: true
+      response_format: json_object
+      thinking: ""
+      request_timeout: 60s
+      max_concurrency: 2
+    - id: deepseek
+      supplier: deepseek
+      kind: openai
+      enabled: true
+      order: 40
+      base_url: https://api.deepseek.com
+      api_key: ""
+      model: "deepseek-flash"
+      image_enabled: true
+      text_enabled: true
+      response_format: json_object
+      thinking: ""
+      request_timeout: 60s
+      max_concurrency: 2
+  routing:
+    failure_threshold: 3
+    cooldown: 60s
+    max_response_bytes: 2097152
+    max_output_tokens: 4096
+# Redis 与任务参数供正式重构使用，接入测试不会连接数据库或队列
+redis:
+  host: 127.0.0.1
+  port: 6379
+  username: ""
+  password: ""
+  db: 0
+  tls: false
+  dial_timeout: 5s
+  read_timeout: 5s
+  write_timeout: 5s
+tasks:
+  queue: ai_import
+  concurrency: 2
+  max_rounds: 3
+  retry_initial: 5s
+  retry_max: 5m
+  shutdown_timeout: 5m30s
+  outbox_poll_interval: 2s
+  cancellation_poll_interval: 2s

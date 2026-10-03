@@ -59,12 +59,16 @@ if ($EnableAI) {
 Assert-Directory -Path $serverRoot -Label "Backend"
 Assert-Directory -Path $webRoot -Label "Frontend"
 
+# 后端子进程固定使用 Go 1.26.8，避免较新的系统 Go 自动成为实际工具链
+if (-not $FrontendOnly) {
+    [Environment]::SetEnvironmentVariable("GOTOOLCHAIN", "go1.26.8", "Process")
+}
 $goCommand = $null
 if (-not $FrontendOnly) {
     $goCommand = Get-Command go -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 if (-not $FrontendOnly -and -not $goCommand) {
-    throw "Go was not found in PATH. Install Go 1.27 or open a shell with Go configured."
+    throw "Go was not found in PATH. Install Go 1.26.8 or open a shell with Go configured."
 }
 
 $pnpmInvocation = $null

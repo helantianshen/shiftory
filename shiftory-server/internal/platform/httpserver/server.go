@@ -2,12 +2,14 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,6 +36,9 @@ type Dependencies struct {
 	Tokens       *auth.TokenManager
 	Store        storage.Store
 	ImportWakeup func()
+	ImportCancel func(context.Context, uint64, uint64)
+	QueueReady   func(context.Context) bool
+	AIMetrics    func(context.Context) (string, error)
 	Logger       *slog.Logger
 }
 
@@ -45,6 +50,9 @@ type server struct {
 	authService  *auth.Service
 	store        storage.Store
 	importWakeup func()
+	importCancel func(context.Context, uint64, uint64)
+	queueReady   func(context.Context) bool
+	aiMetrics    func(context.Context) (string, error)
 	logger       *slog.Logger
 }
 
@@ -67,8 +75,8 @@ func New(deps Dependencies) (http.Handler, error) {
 	}
 	s := &server{
 		db: deps.DB, config: deps.Config, tokens: deps.Tokens,
-		authService: auth.NewService(auth.NewMySQLRepository(deps.DB), auth.NewPasswordHasher(auth.DefaultPasswordParams()), deps.Tokens),
-		store:       store, importWakeup: deps.ImportWakeup, logger: logger,
+		authService: auth.NewService(auth.NewPostgresRepository(deps.DB), auth.NewPasswordHasher(auth.DefaultPasswordParams()), deps.Tokens),
+		store:       store, importWakeup: deps.ImportWakeup, importCancel: deps.ImportCancel, queueReady: deps.QueueReady, aiMetrics: deps.AIMetrics, logger: logger,
 	}
 	// 全局中间件先负责恢复、请求跟踪和跨域，业务路由再按认证要求分组
 	gin.SetMode(gin.ReleaseMode)
@@ -77,6 +85,24 @@ func New(deps Dependencies) (http.Handler, error) {
 	router.Use(gin.Recovery(), s.requestContext(), s.cors())
 	router.GET("/health", func(c *gin.Context) { success(c, http.StatusOK, gin.H{"status": "ok"}) })
 
+	router.GET("/health/ai", func(c *gin.Context) {
+		ready := s.queueReady != nil && s.queueReady(c.Request.Context())
+		success(c, 200, gin.H{"enabled": s.config.AIEnabled, "queueReady": ready})
+	})
+	router.GET("/metrics/ai", func(c *gin.Context) {
+		if s.aiMetrics == nil {
+			c.String(200, "shiftory_ai_enabled 0\n")
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+		defer cancel()
+		body, e := s.aiMetrics(ctx)
+		if e != nil {
+			c.String(503, "AI metrics unavailable\n")
+			return
+		}
+		c.Data(200, "text/plain; version=0.0.4; charset=utf-8", []byte(body))
+	})
 	v1 := router.Group("/api/v1")
 	authRoutes := v1.Group("/auth")
 	authRoutes.POST("/register", s.register)
@@ -120,6 +146,13 @@ func New(deps Dependencies) (http.Handler, error) {
 	protected.GET("/workspaces/:workspaceId/audits", s.listAudits)
 	protected.POST("/workspaces/:workspaceId/imports", s.createImport)
 	protected.POST("/workspaces/:workspaceId/imports/image", s.createImageImport)
+	protected.POST("/workspaces/:workspaceId/imports/text", s.createTextImport)
+	protected.POST("/workspaces/:workspaceId/imports/:importId/retry", s.retryImport)
+	protected.POST("/workspaces/:workspaceId/imports/:importId/refresh-preview", s.refreshPreview)
+	protected.GET("/workspaces/:workspaceId/imports/:importId/attempts", s.attempts)
+	protected.GET("/workspaces/:workspaceId/imports/:importId/attempts/:attemptId/calls", s.calls)
+	protected.GET("/workspaces/:workspaceId/imports/:importId/attempts/:attemptId/calls/:callId/raw", s.callRaw)
+
 	protected.GET("/workspaces/:workspaceId/imports/template.xlsx", s.downloadImportTemplate)
 	protected.GET("/workspaces/:workspaceId/imports", s.listImports)
 	protected.GET("/workspaces/:workspaceId/imports/:importId", s.getImport)
@@ -401,7 +434,7 @@ func (s *server) recordSecurityAudit(c *gin.Context, actorID any, action, target
 	}
 	_, _ = s.db.ExecContext(c.Request.Context(), `
 INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target_id, request_id, ip_address, user_agent, details)
-VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)`, actorID, action, targetType, targetID, requestID, c.ClientIP(), userAgent, payload)
+VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8)`, actorID, action, targetType, fmt.Sprint(targetID), requestID, c.ClientIP(), userAgent, payload)
 }
 
 // setRefreshCookie 设置仅认证路径可用的 HttpOnly Cookie，HTTPS 来源启用 Secure

@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,17 +15,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/goccy/go-yaml"
 )
 
 // Config 保存完成来源合并与类型校验后的后端启动配置
 type Config struct {
+	MigrateLegacyAI      bool
+	AI                   AIConfig
+	Redis                RedisConfig
+	Tasks                TasksConfig
 	Environment          string
 	LogLevel             string
 	LogFormat            string
 	Port                 int
-	MySQL                MySQLConfig
+	Postgres             PostgresConfig
 	UploadDir            string
 	WebDir               string
 	PublicOrigin         string
@@ -45,25 +49,22 @@ type Config struct {
 	AIRequestTimeout     time.Duration
 }
 
-// MySQLConfig 保存可由部署环境调整的数据库连接参数
-type MySQLConfig struct {
+// PostgresConfig 保存可由部署环境调整的数据库连接参数
+type PostgresConfig struct {
 	Host     string
 	Port     int
 	Database string
 	User     string
 	Password string
+	SSLMode  string
 }
 
-// DSN 使用驱动编码连接参数，字符集、时间解析和时区固定为应用约定
-func (c MySQLConfig) DSN() string {
-	value := mysql.NewConfig()
-	value.Net = "tcp"
-	value.Addr = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
-	value.DBName, value.User, value.Passwd = c.Database, c.User, c.Password
-	value.ParseTime, value.Loc = true, time.UTC
-	// 排序规则通过会话变量设置，避免驱动握手阶段对排序规则编号的限制
-	value.Params = map[string]string{"charset": "utf8mb4", "collation_connection": "'utf8mb4_0900_as_cs'"}
-	return value.FormatDSN()
+// DSN 编码连接参数并固定会话时区，密码及数据库名称中的特殊字符保留原值
+func (c PostgresConfig) DSN() string {
+	value := url.URL{Scheme: "postgres", User: url.UserPassword(c.User, c.Password), Host: net.JoinHostPort(c.Host, strconv.Itoa(c.Port)), Path: "/" + c.Database}
+	params := url.Values{"sslmode": {c.SSLMode}, "timezone": {"UTC"}}
+	value.RawQuery = params.Encode()
+	return value.String()
 }
 
 // Address 将已校验的服务端口转换为监听所有网卡的地址
@@ -77,6 +78,7 @@ func Load(args ...string) (Config, error) {
 	// 模式仅由命令行决定，额外位置参数视为启动错误
 	flags := flag.NewFlagSet("shiftory", flag.ContinueOnError)
 	environmentFlag := flags.String("env", "production", "configuration profile: development or production")
+	legacyFlag := flags.Bool("migrate-ai-jobs", false, "enqueue legacy AI jobs after stopping all old API processes")
 	configPath := flags.String("config", "", "explicit YAML configuration file (optional)")
 	if err := flags.Parse(args); err != nil {
 		return Config{}, err
@@ -132,22 +134,31 @@ func Load(args ...string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	mysqlPort, err := portOr("SHIFTORY_MYSQL_PORT", fileValues, 3306)
+	postgresPort, err := portOr("SHIFTORY_POSTGRES_PORT", fileValues, 5432)
 	if err != nil {
 		return Config{}, err
 	}
+	sslmode := envOr("SHIFTORY_POSTGRES_SSLMODE", fileValues, "disable")
+	switch sslmode {
+	case "disable", "require", "verify-ca", "verify-full":
+	default:
+		return Config{}, fmt.Errorf("invalid SHIFTORY_POSTGRES_SSLMODE %q", sslmode)
+	}
+
 	// 把已校验的参数与按优先级解析的字符串组装为统一启动配置
 	cfg := Config{
-		Environment: environment,
-		LogLevel:    logLevel,
-		LogFormat:   logFormat,
-		Port:        port,
-		MySQL: MySQLConfig{
-			Host:     envOr("SHIFTORY_MYSQL_HOST", fileValues, "127.0.0.1"),
-			Port:     mysqlPort,
-			Database: envOr("SHIFTORY_MYSQL_DATABASE", fileValues, "shiftory"),
-			User:     envOr("SHIFTORY_MYSQL_USER", fileValues, "root"),
-			Password: secretOr("SHIFTORY_MYSQL_PASSWORD", fileValues, "123456"),
+		MigrateLegacyAI: *legacyFlag,
+		Environment:     environment,
+		LogLevel:        logLevel,
+		LogFormat:       logFormat,
+		Port:            port,
+		Postgres: PostgresConfig{
+			Host:     envOr("SHIFTORY_POSTGRES_HOST", fileValues, "127.0.0.1"),
+			Port:     postgresPort,
+			Database: envOr("SHIFTORY_POSTGRES_DATABASE", fileValues, "shiftory"),
+			User:     envOr("SHIFTORY_POSTGRES_USER", fileValues, "shiftory"),
+			Password: secretOr("SHIFTORY_POSTGRES_PASSWORD", fileValues, "123456"),
+			SSLMode:  envOr("SHIFTORY_POSTGRES_SSLMODE", fileValues, "disable"),
 		},
 		UploadDir:            envOr("SHIFTORY_STORAGE_UPLOAD_DIR", fileValues, "./uploads"),
 		WebDir:               envOr("SHIFTORY_SERVER_WEB_DIR", fileValues, "../shiftory-web/dist"),
@@ -167,6 +178,9 @@ func Load(args ...string) (Config, error) {
 		WorkerPollPeriod:     workerPollPeriod,
 		WorkerMaxConcurrency: workerMaxConcurrency,
 		AIRequestTimeout:     aiRequestTimeout,
+	}
+	if err := loadAIConfig(&cfg, fileValues); err != nil {
+		return Config{}, err
 	}
 	// 公开来源必须是无路径的 HTTP 或 HTTPS 地址，用于来源及 Cookie 策略
 	origin, err := url.Parse(cfg.PublicOrigin)
@@ -262,9 +276,12 @@ func boolOr(name string, fileValues map[string]string, fallback bool) (bool, err
 // yamlKeys 明确列出可用的 YAML 键，未知键必须报错，避免拼写错误静默回退到默认值
 var yamlKeys = []string{
 	"log.level", "log.format", "server.port", "server.web_dir", "server.public_origin",
-	"mysql.host", "mysql.port", "mysql.database", "mysql.user", "mysql.password",
+	"postgres.host", "postgres.port", "postgres.database", "postgres.user", "postgres.password", "postgres.sslmode",
 	"storage.upload_dir", "jwt.issuer", "jwt.audience", "jwt.private_key_file", "jwt.public_key_file",
 	"ai.model", "ai.base_url", "ai.api_key", "ai.enabled", "ai.request_timeout",
+	"ai.providers", "ai.round_timeout", "ai.routing.failure_threshold", "ai.routing.cooldown", "ai.routing.max_response_bytes", "ai.routing.max_output_tokens",
+	"redis.host", "redis.port", "redis.username", "redis.password", "redis.db", "redis.tls", "redis.dial_timeout", "redis.read_timeout", "redis.write_timeout",
+	"tasks.queue", "tasks.concurrency", "tasks.max_rounds", "tasks.retry_initial", "tasks.retry_max", "tasks.shutdown_timeout", "tasks.outbox_poll_interval", "tasks.cancellation_poll_interval",
 	"worker.id", "worker.lease", "worker.poll_interval", "worker.max_concurrency",
 }
 
@@ -311,7 +328,7 @@ func parseYAMLFile(path string) (map[string]string, error) {
 	}
 	defer file.Close()
 	decoder := yaml.NewDecoder(file)
-	var values map[string]map[string]*string
+	var values map[string]map[string]any
 	if err := decoder.Decode(&values); err != nil || values == nil {
 		// 解码器错误可能包含带凭据的原文片段，因此这里只返回固定错误信息
 		return nil, fmt.Errorf("invalid YAML configuration %s: expected a single mapping of configuration groups", path)
@@ -340,13 +357,40 @@ func parseYAMLFile(path string) (map[string]string, error) {
 		}
 		for field, value := range fields {
 			key := group + "." + field
+			if key == "ai.providers" {
+				b, e := json.Marshal(value)
+				if e != nil {
+					return nil, errors.New("invalid providers")
+				}
+				result[environmentKey(key)] = string(b)
+				continue
+			}
+			if key == "ai.routing" {
+				nested, ok := value.(map[string]any)
+				if !ok {
+					return nil, errors.New("invalid ai.routing")
+				}
+				for k, v := range nested {
+					path := key + "." + k
+					if !allowed[path] || v == nil {
+						return nil, errors.New("invalid routing field")
+					}
+					result[environmentKey(path)] = fmt.Sprint(v)
+				}
+				continue
+			}
 			if !allowed[key] {
 				return nil, fmt.Errorf("unknown YAML configuration key %q in %s", key, path)
 			}
 			if value == nil {
 				return nil, fmt.Errorf("null YAML configuration value %q in %s", key, path)
 			}
-			result[environmentKey(key)] = *value
+			switch value.(type) {
+			case string, bool, int, int64, uint64, float64:
+			default:
+				return nil, errors.New("configuration value must be scalar")
+			}
+			result[environmentKey(key)] = fmt.Sprint(value)
 		}
 	}
 	return result, nil

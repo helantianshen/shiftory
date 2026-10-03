@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -168,13 +169,19 @@ func (s *server) saveSchedule(c *gin.Context, day schedule.Day) (schedule.Day, e
 		if day.Version != 0 {
 			return schedule.Day{}, errVersionConflict
 		}
-		result, err := tx.ExecContext(c.Request.Context(), `
+		var id int64
+		err := tx.QueryRowContext(c.Request.Context(), `
 INSERT INTO schedule_days (workspace_id, user_id, work_date, status, source_type, note, version, created_by)
-VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?, 1, ?)`, day.WorkspaceID, day.UserID, day.WorkDate.String(), day.Status, day.SourceType, day.Note, day.CreatedBy)
+VALUES (NULLIF($1::bigint, 0), $2, $3, $4, $5, $6, 1, $7)
+ON CONFLICT (user_id, work_date) DO NOTHING RETURNING id`, day.WorkspaceID, day.UserID, day.WorkDate.String(), day.Status, day.SourceType, day.Note, day.CreatedBy).Scan(&id)
+		// 尚不存在的排班无法加行锁，唯一约束裁决并发创建后返回版本冲突
+		if errors.Is(err, sql.ErrNoRows) {
+			return schedule.Day{}, errVersionConflict
+		}
 		if err != nil {
 			return schedule.Day{}, err
 		}
-		id, _ := result.LastInsertId()
+
 		day.ID, day.Version = uint64(id), 1
 	} else {
 		if day.Version == 0 || day.Version != existing.Version {
@@ -182,11 +189,11 @@ VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?, 1, ?)`, day.WorkspaceID, day.UserID, day.Wo
 		}
 		day.ID, day.Version = existing.ID, existing.Version+1
 		if _, err := tx.ExecContext(c.Request.Context(), `
-UPDATE schedule_days SET status = ?, source_type = ?, source_import_id = NULL, note = ?, version = ?
-WHERE id = ? AND version = ?`, day.Status, day.SourceType, day.Note, day.Version, day.ID, existing.Version); err != nil {
+UPDATE schedule_days SET status = $1, source_type = $2, source_import_id = NULL, note = $3, version = $4
+WHERE id = $5 AND version = $6`, day.Status, day.SourceType, day.Note, day.Version, day.ID, existing.Version); err != nil {
 			return schedule.Day{}, err
 		}
-		if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM schedule_segments WHERE schedule_day_id = ?`, day.ID); err != nil {
+		if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM schedule_segments WHERE schedule_day_id = $1`, day.ID); err != nil {
 			return schedule.Day{}, err
 		}
 	}
@@ -196,16 +203,17 @@ WHERE id = ? AND version = ?`, day.Status, day.SourceType, day.Note, day.Version
 		if segment.StartTime != nil {
 			start, end = segment.StartTime.String()+":00", segment.EndTime.String()+":00"
 		}
-		result, err := tx.ExecContext(c.Request.Context(), `
+		var segmentID int64
+		err := tx.QueryRowContext(c.Request.Context(), `
 INSERT INTO schedule_segments
     (schedule_day_id, segment_type, shift_id, shift_name_snapshot, shift_code_snapshot, start_time, end_time, cross_day, display_color_snapshot, sort_order, original_label)
-VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''))`,
+VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, NULLIF($11, '')) RETURNING id`,
 			day.ID, segment.Type, segment.ShiftID, segment.ShiftName, segment.ShiftCode, start, end,
-			segment.CrossDay, segment.DisplayColor, segment.SortOrder, segment.OriginalLabel)
+			segment.CrossDay, segment.DisplayColor, segment.SortOrder, segment.OriginalLabel).Scan(&segmentID)
 		if err != nil {
 			return schedule.Day{}, err
 		}
-		segmentID, err := result.LastInsertId()
+
 		if err != nil {
 			return schedule.Day{}, err
 		}
@@ -223,7 +231,7 @@ VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, NULLIF
 	if _, err := tx.ExecContext(c.Request.Context(), `
 INSERT INTO schedule_revisions
     (schedule_day_id, workspace_id, user_id, work_date, before_version, after_version, before_snapshot, after_snapshot, change_type, changed_by)
-VALUES (?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, ?)`, day.ID, day.WorkspaceID, day.UserID, day.WorkDate.String(), beforeVersion, day.Version, beforeSnapshot, after, changeType, day.CreatedBy); err != nil {
+VALUES ($1, NULLIF($2::bigint, 0), $3, $4, $5, $6, $7, $8, $9, $10)`, day.ID, day.WorkspaceID, day.UserID, day.WorkDate.String(), beforeVersion, day.Version, beforeSnapshot, after, changeType, day.CreatedBy); err != nil {
 		return schedule.Day{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -236,8 +244,8 @@ VALUES (?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, ?)`, day.ID, day.WorkspaceID, day.
 func (s *server) loadShiftSnapshot(workspaceID, shiftID uint64, segment *schedule.Segment) error {
 	var start, end sql.NullString
 	err := s.db.QueryRow(`
-SELECT name, code, TIME_FORMAT(start_time, '%H:%i'), TIME_FORMAT(end_time, '%H:%i'), cross_day, display_color
-FROM shifts WHERE id = ? AND workspace_id = ? AND enabled = TRUE`, shiftID, workspaceID).Scan(
+SELECT name, code, to_char(start_time::interval, 'HH24:MI'), to_char(end_time::interval, 'HH24:MI'), cross_day, display_color
+FROM shifts WHERE id = $1 AND workspace_id = $2 AND enabled = TRUE`, shiftID, workspaceID).Scan(
 		&segment.ShiftName, &segment.ShiftCode, &start, &end, &segment.CrossDay, &segment.DisplayColor)
 	if err != nil {
 		return err
@@ -253,7 +261,7 @@ FROM shifts WHERE id = ? AND workspace_id = ? AND enabled = TRUE`, shiftID, work
 // userBelongsToWorkspace 检查目标用户是否为有效成员，查询失败时视为不属于工作区
 func (s *server) userBelongsToWorkspace(workspaceID, userID uint64) bool {
 	var count int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ? AND status = 'ACTIVE'`, workspaceID, userID).Scan(&count)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 AND status = 'ACTIVE'`, workspaceID, userID).Scan(&count)
 	return count == 1
 }
 
@@ -295,16 +303,19 @@ func (s *server) querySchedules(workspaceID uint64, userIDs []uint64, start, end
 	if len(userIDs) == 0 {
 		return []schedule.Day{}, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(userIDs)), ",")
+	placeholders := make([]string, len(userIDs))
+	for i := range userIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+3)
+	}
 	args := make([]any, 0, len(userIDs)+2)
 	args = append(args, start.String(), end.String())
 	for _, id := range userIDs {
 		args = append(args, id)
 	}
 	rows, err := s.db.Query(`
-SELECT id, user_id, DATE_FORMAT(work_date, '%Y-%m-%d'), status, source_type, source_import_id, note, version, created_by
+SELECT id, user_id, to_char(work_date, 'YYYY-MM-DD'), status, source_type, source_import_id, note, version, created_by
 FROM schedule_days
-WHERE work_date BETWEEN ? AND ? AND user_id IN (`+placeholders+`)
+WHERE work_date BETWEEN $1 AND $2 AND user_id IN (`+strings.Join(placeholders, ",")+`)
 ORDER BY work_date, user_id`, args...)
 	if err != nil {
 		return nil, err
@@ -337,9 +348,9 @@ ORDER BY work_date, user_id`, args...)
 func (s *server) querySegments(dayID uint64) ([]schedule.Segment, error) {
 	rows, err := s.db.Query(`
 SELECT id, segment_type, shift_id, COALESCE(shift_name_snapshot, ''), COALESCE(shift_code_snapshot, ''),
-       TIME_FORMAT(start_time, '%H:%i'), TIME_FORMAT(end_time, '%H:%i'), cross_day,
+       to_char(start_time::interval, 'HH24:MI'), to_char(end_time::interval, 'HH24:MI'), cross_day,
        COALESCE(display_color_snapshot, ''), sort_order, COALESCE(original_label, '')
-FROM schedule_segments WHERE schedule_day_id = ? ORDER BY sort_order, id`, dayID)
+FROM schedule_segments WHERE schedule_day_id = $1 ORDER BY sort_order, id`, dayID)
 	if err != nil {
 		return nil, err
 	}

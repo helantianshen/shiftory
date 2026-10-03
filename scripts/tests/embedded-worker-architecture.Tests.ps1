@@ -1,4 +1,4 @@
-# 检查后端仅包含 API 和迁移入口，以及 API 内置图片 Runner 的架构约束
+# 检查后端仅包含 API 和迁移入口，以及 API 内置 Asynq Worker 的架构约束
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
@@ -25,8 +25,8 @@ if ($packages -contains "shiftory-server/cmd/worker") {
 }
 
 $apiSource = Get-Content -LiteralPath (Join-Path $serverRoot "cmd\api\main.go") -Raw
-if ($apiSource -notmatch "if\s+cfg\.AIEnabled" -or $apiSource -notmatch "importjob\.NewRunner") {
-    throw "The API command must own the conditional embedded image task runner."
+if ($apiSource -notmatch "if\s+cfg\.AIEnabled" -or $apiSource -notmatch "importjob\.NewQueue") {
+    throw "The API command must own the conditional embedded AI task queue."
 }
 if ($apiSource -notmatch "database\.Migrate") {
     throw "The API command must synchronize the schema before serving requests."

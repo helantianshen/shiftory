@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"shiftory-server/internal/schedule"
 )
@@ -84,19 +84,20 @@ func (s *server) createShift(c *gin.Context) {
 	if request.StartTime != nil {
 		start, end = *request.StartTime+":00", *request.EndTime+":00"
 	}
-	result, err := tx.ExecContext(c.Request.Context(), `
+	var shiftID int64
+	err = tx.QueryRowContext(c.Request.Context(), `
 INSERT INTO shifts (workspace_id, name, code, start_time, end_time, cross_day, display_color, enabled, sort_order, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, workspaceID, request.Name, request.Code, start, end, request.CrossDay, request.DisplayColor, enabled, request.SortOrder, currentUserID(c))
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`, workspaceID, request.Name, request.Code, start, end, request.CrossDay, request.DisplayColor, enabled, request.SortOrder, currentUserID(c)).Scan(&shiftID)
 	if err != nil {
-		var mysqlErr *mysql.MySQLError
-		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			failure(c, http.StatusConflict, "SHIFT_EXISTS", "班次代码已存在", nil)
 			return
 		}
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法创建班次", nil)
 		return
 	}
-	shiftID, _ := result.LastInsertId()
+
 	// 本次别名先忽略大小写去重，跨班次唯一性再由数据库约束检查
 	seen := map[string]bool{}
 	for _, alias := range request.Aliases {
@@ -107,9 +108,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, workspaceID, request.Name, request.Code,
 		}
 		seen[normalized] = true
 		if _, err := tx.ExecContext(c.Request.Context(), `
-INSERT INTO shift_aliases (workspace_id, shift_id, alias, alias_normalized) VALUES (?, ?, ?, ?)`, workspaceID, shiftID, alias, normalized); err != nil {
-			var mysqlErr *mysql.MySQLError
-			if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+INSERT INTO shift_aliases (workspace_id, shift_id, alias, alias_normalized) VALUES ($1, $2, $3, $4)`, workspaceID, shiftID, alias, normalized); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				failure(c, http.StatusConflict, "SHIFT_ALIAS_EXISTS", "班次别名已被使用", gin.H{"alias": alias})
 				return
 			}
@@ -136,7 +137,7 @@ func (s *server) listShifts(c *gin.Context) {
 	}
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT id, name, code, start_time, end_time, cross_day, display_color, enabled, sort_order
-FROM shifts WHERE workspace_id = ? ORDER BY sort_order, id`, workspaceID)
+FROM shifts WHERE workspace_id = $1 ORDER BY sort_order, id`, workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询班次", nil)
 		return
@@ -170,7 +171,7 @@ FROM shifts WHERE workspace_id = ? ORDER BY sort_order, id`, workspaceID)
 
 // shiftAliases 读取指定班次的别名列表
 func (s *server) shiftAliases(shiftID uint64) ([]string, error) {
-	rows, err := s.db.Query(`SELECT alias FROM shift_aliases WHERE shift_id = ? ORDER BY id`, shiftID)
+	rows, err := s.db.Query(`SELECT alias FROM shift_aliases WHERE shift_id = $1 ORDER BY id`, shiftID)
 	if err != nil {
 		return nil, err
 	}

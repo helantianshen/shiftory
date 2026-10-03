@@ -55,7 +55,7 @@ func TestWorkspaceConsistency(t *testing.T) {
 	duplicate := invite(a, alice, "alice@example.com", "MEMBER")
 	status("POST", "/api/v1/invitations/accept", alice, map[string]any{"invitationId": duplicate}, http.StatusConflict)
 	var role string
-	if err := db.QueryRow("SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?", a, alice.UserID).Scan(&role); err != nil || role != "OWNER" {
+	if err := db.QueryRow("SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2", a, alice.UserID).Scan(&role); err != nil || role != "OWNER" {
 		t.Fatal("owner role changed", err)
 	}
 	// 班次主体不变时仍可修改别名
@@ -64,7 +64,7 @@ func TestWorkspaceConsistency(t *testing.T) {
 	shiftPayload["aliases"] = []string{"新别名"}
 	apiRequest(t, router, "PUT", path(a, fmt.Sprintf("/shifts/%d", shiftID)), alice.AccessToken, shiftPayload)
 	var aliases int
-	if err := db.QueryRow("SELECT COUNT(*) FROM shift_aliases WHERE shift_id = ? AND alias = '新别名'", shiftID).Scan(&aliases); err != nil || aliases != 1 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM shift_aliases WHERE shift_id = $1 AND alias = '新别名'", shiftID).Scan(&aliases); err != nil || aliases != 1 {
 		t.Fatal("alias-only update failed", err)
 	}
 	date := time.Now().UTC().Format("2006-01-02")
@@ -82,14 +82,15 @@ func TestWorkspaceConsistency(t *testing.T) {
 		t.Fatal("global completeness missing")
 	}
 	// 降级后的上传者可以查看资料，但不能提交或撤销替他人创建的任务
-	result, err := db.Exec("INSERT INTO import_jobs (workspace_id,upload_user_id,target_user_id,import_type,state,period_start,period_end,source_filename,idempotency_key) VALUES (?,?,?,'XLSX','NEEDS_REVIEW',?,?,'test.xlsx','scope-test')", a, bob.UserID, alice.UserID, date, date)
+	var jobID int64
+	err = db.QueryRow("INSERT INTO import_jobs (workspace_id,upload_user_id,target_user_id,import_type,state,period_start,period_end,source_filename,idempotency_key) VALUES ($1,$2,$3,'XLSX','NEEDS_REVIEW',$4,$5,'test.xlsx','scope-test') RETURNING id", a, bob.UserID, alice.UserID, date, date).Scan(&jobID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	jobID, _ := result.LastInsertId()
+
 	apiRequest(t, router, "PATCH", path(a, fmt.Sprintf("/members/%d", bob.UserID)), alice.AccessToken, map[string]any{"role": "MEMBER", "status": "ACTIVE"})
 	status("POST", path(a, fmt.Sprintf("/imports/%d/commit", jobID)), bob, map[string]any{}, http.StatusForbidden)
-	if _, err := db.Exec("UPDATE import_jobs SET state = 'COMPLETED' WHERE id = ?", jobID); err != nil {
+	if _, err := db.Exec("UPDATE import_jobs SET state = 'COMPLETED' WHERE id = $1", jobID); err != nil {
 		t.Fatal(err)
 	}
 	status("POST", path(a, fmt.Sprintf("/imports/%d/rollback", jobID)), bob, map[string]any{}, http.StatusForbidden)
@@ -100,14 +101,15 @@ func TestWorkspaceConsistency(t *testing.T) {
 		t.Fatal("import scopes differ from request")
 	}
 	// 目标离开工作区后，管理员也不能通过旧任务继续修改其全局排班
-	result, err = db.Exec("INSERT INTO import_jobs (workspace_id,upload_user_id,target_user_id,import_type,state,period_start,period_end,source_filename,idempotency_key) VALUES (?,?,?,'XLSX','NEEDS_REVIEW',?,?,'target.xlsx','removed-target')", a, alice.UserID, bob.UserID, date, date)
+	var targetJobID int64
+	err = db.QueryRow("INSERT INTO import_jobs (workspace_id,upload_user_id,target_user_id,import_type,state,period_start,period_end,source_filename,idempotency_key) VALUES ($1,$2,$3,'XLSX','NEEDS_REVIEW',$4,$5,'target.xlsx','removed-target') RETURNING id", a, alice.UserID, bob.UserID, date, date).Scan(&targetJobID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetJobID, _ := result.LastInsertId()
+
 	apiRequest(t, router, "PATCH", path(a, fmt.Sprintf("/members/%d", bob.UserID)), alice.AccessToken, map[string]any{"role": "MEMBER", "status": "REMOVED"})
 	status("POST", path(a, fmt.Sprintf("/imports/%d/commit", targetJobID)), alice, map[string]any{}, http.StatusForbidden)
-	if _, err := db.Exec("UPDATE schedule_days SET source_import_id = ?, source_type = 'XLSX' WHERE user_id = ?", targetJobID, bob.UserID); err != nil {
+	if _, err := db.Exec("UPDATE schedule_days SET source_import_id = $1, source_type = 'XLSX' WHERE user_id = $2", targetJobID, bob.UserID); err != nil {
 		t.Fatal(err)
 	}
 	apiRequest(t, router, "DELETE", path(a, ""), alice.AccessToken, map[string]any{"confirmationName": "A"})
@@ -198,7 +200,7 @@ func TestPersonalScheduleScope(t *testing.T) {
 	workspace := apiRequest(t, router, "POST", "/api/v1/workspaces", alice.AccessToken, map[string]any{"name": "source", "timezone": "UTC"})
 	workspaceID := jsonUint(t, workspace, "data", "id")
 	var shiftID uint64
-	if err := db.QueryRow("SELECT id FROM shifts WHERE workspace_id=? LIMIT 1", workspaceID).Scan(&shiftID); err != nil {
+	if err := db.QueryRow("SELECT id FROM shifts WHERE workspace_id=$1 LIMIT 1", workspaceID).Scan(&shiftID); err != nil {
 		t.Fatal(err)
 	}
 	input := map[string]any{"status": "WORKING", "version": 0, "shiftWorkspaceId": workspaceID, "segments": []map[string]any{{"type": "SHIFT", "shiftId": shiftID}}}

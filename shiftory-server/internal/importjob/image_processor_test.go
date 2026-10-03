@@ -43,7 +43,7 @@ func TestImageProcessorCreatesReviewItemsWithoutWritingSchedules(t *testing.T) {
 	if err := db.QueryRow(`SELECT workspace_id, target_user_id FROM import_jobs LIMIT 1`).Scan(&workspaceID, &targetUserID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO shifts (workspace_id, name, code, start_time, end_time, cross_day, display_color, created_by) VALUES (?, '早班', 'MORNING', '08:00:00', '16:00:00', FALSE, '#22a06b', ?)`, workspaceID, targetUserID); err != nil {
+	if _, err := db.Exec(`INSERT INTO shifts (workspace_id, name, code, start_time, end_time, cross_day, display_color, created_by) VALUES ($1, '早班', 'MORNING', '08:00:00', '16:00:00', FALSE, '#22a06b', $2)`, workspaceID, targetUserID); err != nil {
 		t.Fatal(err)
 	}
 	pngData, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
@@ -76,12 +76,13 @@ func TestImagePreviewFindsGlobalSchedule(t *testing.T) {
 	if err := db.QueryRow("SELECT workspace_id, target_user_id FROM import_jobs LIMIT 1").Scan(&workspaceID, &userID); err != nil {
 		t.Fatal(err)
 	}
-	result, err := db.Exec("INSERT INTO workspaces (name,timezone,owner_user_id,created_by) VALUES ('Other','UTC',?,?)", userID, userID)
+	var otherID int64
+	err := db.QueryRow("INSERT INTO workspaces (name,timezone,owner_user_id,created_by) VALUES ('Other','UTC',$1,$2) RETURNING id", userID, userID).Scan(&otherID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherID, _ := result.LastInsertId()
-	if _, err := db.Exec("INSERT INTO schedule_days (workspace_id,user_id,work_date,status,source_type,note,version,created_by) VALUES (?,?,'2026-09-01','REST','MANUAL','global',3,?)", otherID, userID, userID); err != nil {
+
+	if _, err := db.Exec("INSERT INTO schedule_days (workspace_id,user_id,work_date,status,source_type,note,version,created_by) VALUES ($1,$2,'2026-09-01','REST','MANUAL','global',3,$3)", otherID, userID, userID); err != nil {
 		t.Fatal(err)
 	}
 	processor := NewImageProcessor(db, memoryStore{}, fakeRecognizer{}, "test")

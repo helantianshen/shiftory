@@ -92,6 +92,7 @@ const (
 	SourceXLSX    SourceType = "XLSX"
 	SourceXLS     SourceType = "XLS"
 	SourceImageAI SourceType = "IMAGE_AI"
+	SourceTextAI  SourceType = "TEXT_AI"
 )
 
 // SegmentType 区分预定义班次引用与自定义时间范围

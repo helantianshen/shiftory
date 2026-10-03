@@ -1,4 +1,4 @@
-// Package main 启动长期运行的 HTTP API，并按配置承载图片导入任务
+// Package main 启动长期运行的 HTTP API，并按配置承载 AI 导入任务
 package main
 
 import (
@@ -6,14 +6,16 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+	"shiftory-server/internal/ai"
 	"shiftory-server/internal/auth"
-	"shiftory-server/internal/importer/imageai"
 	"shiftory-server/internal/importjob"
 	"shiftory-server/internal/platform/config"
 	"shiftory-server/internal/platform/database"
@@ -23,7 +25,7 @@ import (
 	"shiftory-server/internal/platform/storage"
 )
 
-// main 加载配置并装配数据库、认证、存储和可选图片 Runner，处理服务启动与停机
+// main 加载配置并装配数据库、认证、存储和可选 AI 队列，处理服务启动与停机
 func main() {
 	// 先解析模式与配置再初始化日志，帮助请求直接结束而不连接外部资源
 	cfg, err := config.Load(os.Args[1:]...)
@@ -33,15 +35,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if cfg.MigrateLegacyAI {
+		log.Fatal("--migrate-ai-jobs is only valid for cmd/migrate")
+	}
 	logger, err := logging.New(cfg.LogLevel, cfg.LogFormat, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+	slog.SetDefault(logger)
 	logger.Info("configuration loaded", "environment", cfg.Environment, "log_level", cfg.LogLevel, "log_format", cfg.LogFormat, "http_addr", cfg.Address(), "ai_enabled", cfg.AIEnabled)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// 建立数据库、上传目录和持久化签名密钥，依赖失败时不开放 HTTP 服务
-	db, err := database.Open(ctx, cfg.MySQL.DSN())
+	db, err := database.Open(ctx, cfg.Postgres.DSN())
 	if err != nil {
 		logger.Error("database connection failed", "error", err)
 		log.Fatal(err)
@@ -63,42 +69,42 @@ func main() {
 		log.Fatal(err)
 	}
 	tokens := auth.NewTokenManager(privateKey, publicKey, "shiftory-ed25519-v1", cfg.JWTIssuer, cfg.JWTAudience, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
-	// AI 开关决定是否装配任务处理依赖，普通接口不要求识别器存在
-	var runner *importjob.Runner
+	redisClient := redis.NewClient(importjob.RedisOptions(cfg.Redis))
+	defer redisClient.Close()
+	var queue *importjob.Queue
+	dispatcherCtx, stopDispatcher := context.WithCancel(context.Background())
+	defer stopDispatcher()
+	dispatcherDone := make(chan struct{})
 	if cfg.AIEnabled {
-		client, err := imageai.NewOpenAICompatibleWithTimeoutAndLogger(cfg.AIModel, cfg.AIAPIKey, cfg.AIBaseURL, cfg.AIRequestTimeout, logger)
-		if err != nil {
-			log.Fatalf("configure image AI: %v", err)
+		recognizer, e := ai.New(ctx, cfg.AI, redisClient)
+		if e != nil {
+			log.Fatal("AI workflow configuration failed")
 		}
-		processor := importjob.NewImageProcessorWithLogger(db, store, client, cfg.AIModel, logger)
-		worker := importjob.NewWorker(importjob.NewMySQLRepository(db), processor, cfg.WorkerID, cfg.WorkerLease)
-		runner, err = importjob.NewRunnerWithLogger(worker, cfg.WorkerMaxConcurrency, cfg.WorkerPollPeriod, logger)
-		if err != nil {
-			logger.Error("image worker configuration failed", "error", err)
-			log.Fatalf("configure image worker: %v", err)
+		processor := importjob.NewImageProcessorWithLogger(db, store, recognizer, "routed", logger)
+		queue = importjob.NewQueue(db, cfg, processor, redisClient, logger)
+		if e = queue.Start(); e != nil {
+			log.Fatal("AI queue initialization failed")
 		}
-		logger.Info("image worker enabled", "worker_id", cfg.WorkerID, "max_concurrency", cfg.WorkerMaxConcurrency, "poll_interval", cfg.WorkerPollPeriod.String(), "lease", cfg.WorkerLease.String())
+		go func() { defer close(dispatcherDone); queue.Dispatch(dispatcherCtx) }()
 	} else {
-		logger.Info("image worker disabled")
+		close(dispatcherDone)
 	}
-	// 把任务入库后的唤醒能力交给 HTTP 层，实际领取仍由 Runner 查询数据库
-	var wakeup func()
-	if runner != nil {
-		wakeup = runner.Notify
-	}
-	handler, err := httpserver.New(httpserver.Dependencies{DB: db, Config: cfg, Tokens: tokens, Store: store, ImportWakeup: wakeup, Logger: logger})
+
+	handler, err := httpserver.New(httpserver.Dependencies{DB: db, Config: cfg, Tokens: tokens, Store: store, ImportCancel: func(c context.Context, j, g uint64) {
+		if queue != nil {
+			queue.Cancel(c, j, g)
+		}
+	}, QueueReady: func(c context.Context) bool { return queue != nil && queue.Ready(c) }, AIMetrics: func(c context.Context) (string, error) {
+		if queue == nil {
+			return "shiftory_ai_enabled 0\n", nil
+		}
+		return queue.Metrics(c)
+	}, Logger: logger})
 	if err != nil {
 		logger.Error("HTTP handler initialization failed", "error", err)
 		log.Fatal(err)
 	}
 	server := &http.Server{Addr: cfg.Address(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
-	if runner != nil {
-		go func() {
-			if err := runner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("image worker stopped", "error", err)
-			}
-		}()
-	}
 	// HTTP 监听在后台运行，异常退出会取消共享上下文以触发停机
 	go func() {
 		logger.Info("Shiftory API listening", "http_addr", cfg.Address())
@@ -109,13 +115,19 @@ func main() {
 	}()
 	// 收到退出信号后限时等待 HTTP 请求结束，再释放任务池和数据库资源
 	<-ctx.Done()
+	stopDispatcher()
+	if queue != nil {
+		queue.Stop()
+	}
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownContext); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 	}
-	if runner != nil {
-		runner.Close()
+	stopDispatcher()
+	<-dispatcherDone
+	if queue != nil {
+		queue.Close()
 	}
 	logger.Info("Shiftory API stopped")
 }

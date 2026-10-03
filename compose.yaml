@@ -3,44 +3,50 @@ services:
     build: { context: ., dockerfile: Dockerfile }
     image: shiftory:local
     command: ["--env", "production", "--config", "/app/config/production.yaml"]
-    depends_on:
-      mysql: { condition: service_healthy }
+    networks: [default, database]
+    stop_grace_period: 360s
     environment:
-      SHIFTORY_MYSQL_HOST: mysql
-      SHIFTORY_MYSQL_PORT: "3306"
-      SHIFTORY_MYSQL_DATABASE: ${MYSQL_DATABASE:-shiftory}
-      SHIFTORY_MYSQL_USER: root
-      SHIFTORY_MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      SHIFTORY_REDIS_HOST: redis
+      SHIFTORY_REDIS_PORT: "6379"
+      SHIFTORY_POSTGRES_HOST: ${SHIFTORY_POSTGRES_HOST:-postgres}
+      SHIFTORY_POSTGRES_PORT: "5432"
+      SHIFTORY_POSTGRES_DATABASE: ${SHIFTORY_POSTGRES_DATABASE:-shiftory}
+      SHIFTORY_POSTGRES_USER: ${SHIFTORY_POSTGRES_USER:-shiftory}
+      SHIFTORY_POSTGRES_PASSWORD: ${SHIFTORY_POSTGRES_PASSWORD:?Set the PostgreSQL application password}
       SHIFTORY_SERVER_PUBLIC_ORIGIN:
       SHIFTORY_LOG_LEVEL:
       SHIFTORY_LOG_FORMAT:
       SHIFTORY_AI_ENABLED:
-      SHIFTORY_AI_MODEL:
-      SHIFTORY_AI_BASE_URL:
-      SHIFTORY_AI_API_KEY:
+      SHIFTORY_AI_PROVIDERS_DOUBAO_API_KEY:
+      SHIFTORY_AI_PROVIDERS_DOUBAO_MODEL:
+      SHIFTORY_AI_PROVIDERS_RELAY_API_KEY:
+      SHIFTORY_AI_PROVIDERS_RELAY_MODEL:
+      SHIFTORY_AI_PROVIDERS_RELAY_BASE_URL:
+      SHIFTORY_AI_PROVIDERS_DEEPSEEK_API_KEY:
+      SHIFTORY_AI_PROVIDERS_DEEPSEEK_MODEL:
     ports: ["${SHIFTORY_PORT:-8080}:8080"]
     volumes:
+      - ${SHIFTORY_CONFIG_FILE:-./config/production.example.yaml}:/app/config/production.yaml:ro
       - shiftory-uploads:/app/uploads
       - shiftory-keys:/app/var
-  mysql:
-    image: mysql:8.4
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-shiftory}
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_0900_as_cs
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
     volumes:
-      - shiftory-mysql:/var/lib/mysql
+      - shiftory-redis:/data
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD}"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 20
+      retries: 10
+
+networks:
+  database:
+    external: true
+    name: ${POSTGRES_NETWORK:-shared-postgres_default}
 
 volumes:
-  shiftory-mysql:
   shiftory-uploads:
   shiftory-keys:
+
+  shiftory-redis:

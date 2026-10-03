@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ var allowedThemes = map[string]bool{"mint": true, "sky": true, "lilac": true, "s
 func (s *server) getPreferences(c *gin.Context) {
 	var workspaceID sql.NullInt64
 	var theme string
-	err := s.db.QueryRowContext(c.Request.Context(), `SELECT current_workspace_id, theme FROM user_preferences WHERE user_id = ?`, currentUserID(c)).Scan(&workspaceID, &theme)
+	err := s.db.QueryRowContext(c.Request.Context(), `SELECT current_workspace_id, theme FROM user_preferences WHERE user_id = $1`, currentUserID(c)).Scan(&workspaceID, &theme)
 	if errors.Is(err, sql.ErrNoRows) {
 		success(c, http.StatusOK, gin.H{"currentWorkspaceId": nil, "theme": "mint"})
 		return
@@ -53,8 +54,8 @@ func (s *server) updatePreferences(c *gin.Context) {
 		}
 	}
 	_, err := s.db.ExecContext(c.Request.Context(), `
-INSERT INTO user_preferences (user_id, current_workspace_id, theme) VALUES (?, ?, ?)
-ON DUPLICATE KEY UPDATE current_workspace_id = VALUES(current_workspace_id), theme = VALUES(theme)`, currentUserID(c), request.CurrentWorkspaceID, request.Theme)
+INSERT INTO user_preferences (user_id, current_workspace_id, theme) VALUES ($1, $2, $3)
+ON CONFLICT (user_id) DO UPDATE SET current_workspace_id = EXCLUDED.current_workspace_id, theme = EXCLUDED.theme`, currentUserID(c), request.CurrentWorkspaceID, request.Theme)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法保存偏好", nil)
 		return
@@ -84,7 +85,7 @@ func (s *server) updateWorkspace(c *gin.Context) {
 		failure(c, http.StatusBadRequest, "INVALID_TIMEZONE", "工作区时区无效", nil)
 		return
 	}
-	if _, err := s.db.ExecContext(c.Request.Context(), `UPDATE workspaces SET name = ?, timezone = ? WHERE id = ?`, strings.TrimSpace(request.Name), request.Timezone, workspaceID); err != nil {
+	if _, err := s.db.ExecContext(c.Request.Context(), `UPDATE workspaces SET name = $1, timezone = $2 WHERE id = $3`, strings.TrimSpace(request.Name), request.Timezone, workspaceID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法更新工作区", nil)
 		return
 	}
@@ -111,7 +112,7 @@ func (s *server) updateMember(c *gin.Context) {
 	}
 	// 先约束操作者与目标角色的关系，管理员不能管理所有者或其他管理员
 	var targetRole string
-	if err := s.db.QueryRow(`SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, workspaceID, targetID).Scan(&targetRole); err != nil {
+	if err := s.db.QueryRow(`SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`, workspaceID, targetID).Scan(&targetRole); err != nil {
 		failure(c, http.StatusNotFound, "MEMBER_NOT_FOUND", "成员不存在", nil)
 		return
 	}
@@ -136,7 +137,7 @@ func (s *server) updateMember(c *gin.Context) {
 		left = time.Now().UTC()
 	}
 	if _, err := s.db.ExecContext(c.Request.Context(), `
-UPDATE workspace_members SET role = ?, status = ?, left_at = ? WHERE workspace_id = ? AND user_id = ?`, request.Role, request.Status, left, workspaceID, targetID); err != nil {
+UPDATE workspace_members SET role = $1, status = $2, left_at = $3 WHERE workspace_id = $4 AND user_id = $5`, request.Role, request.Status, left, workspaceID, targetID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法更新成员", nil)
 		return
 	}
@@ -188,7 +189,7 @@ func (s *server) updateShift(c *gin.Context) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	var existingID uint64
-	if err := tx.QueryRowContext(c.Request.Context(), "SELECT id FROM shifts WHERE id = ? AND workspace_id = ? FOR UPDATE", shiftID, workspaceID).Scan(&existingID); err != nil {
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT id FROM shifts WHERE id = $1 AND workspace_id = $2 FOR UPDATE", shiftID, workspaceID).Scan(&existingID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			failure(c, http.StatusNotFound, "SHIFT_NOT_FOUND", "班次不存在", nil)
 		} else {
@@ -197,14 +198,14 @@ func (s *server) updateShift(c *gin.Context) {
 		return
 	}
 	_, err = tx.ExecContext(c.Request.Context(), `
-UPDATE shifts SET name = ?, code = ?, start_time = ?, end_time = ?, cross_day = ?, display_color = ?, enabled = ?, sort_order = ?
-WHERE id = ? AND workspace_id = ?`, request.Name, request.Code, start, end, request.CrossDay, request.DisplayColor, *request.Enabled, request.SortOrder, shiftID, workspaceID)
+UPDATE shifts SET name = $1, code = $2, start_time = $3, end_time = $4, cross_day = $5, display_color = $6, enabled = $7, sort_order = $8
+WHERE id = $9 AND workspace_id = $10`, request.Name, request.Code, start, end, request.CrossDay, request.DisplayColor, *request.Enabled, request.SortOrder, shiftID, workspaceID)
 	if err != nil {
 		failure(c, http.StatusConflict, "SHIFT_CONFLICT", "班次代码冲突", nil)
 		return
 	}
 	// 在同一事务中替换别名，别名冲突会连同班次更新一起回滚
-	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM shift_aliases WHERE shift_id = ?`, shiftID); err != nil {
+	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM shift_aliases WHERE shift_id = $1`, shiftID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法更新班次别名", nil)
 		return
 	}
@@ -216,7 +217,7 @@ WHERE id = ? AND workspace_id = ?`, request.Name, request.Code, start, end, requ
 			continue
 		}
 		seen[normalized] = true
-		if _, err := tx.ExecContext(c.Request.Context(), `INSERT INTO shift_aliases (workspace_id, shift_id, alias, alias_normalized) VALUES (?, ?, ?, ?)`, workspaceID, shiftID, alias, normalized); err != nil {
+		if _, err := tx.ExecContext(c.Request.Context(), `INSERT INTO shift_aliases (workspace_id, shift_id, alias, alias_normalized) VALUES ($1, $2, $3, $4)`, workspaceID, shiftID, alias, normalized); err != nil {
 			failure(c, http.StatusConflict, "SHIFT_ALIAS_EXISTS", "班次别名已被使用", gin.H{"alias": alias})
 			return
 		}
@@ -324,7 +325,7 @@ func (s *server) batchSchedules(c *gin.Context) {
 		if _, err := tx.ExecContext(c.Request.Context(), `
 INSERT INTO schedule_revisions
     (schedule_day_id, workspace_id, user_id, work_date, before_version, after_version, before_snapshot, after_snapshot, change_type, changed_by)
-VALUES (?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, ?)`, saved.ID, workspaceID, request.UserID, saved.WorkDate.String(), beforeVersion, saved.Version, beforeJSON, afterJSON, changeType, currentUserID(c)); err != nil {
+VALUES ($1, NULLIF($2::bigint, 0), $3, $4, $5, $6, $7, $8, $9, $10)`, saved.ID, workspaceID, request.UserID, saved.WorkDate.String(), beforeVersion, saved.Version, beforeJSON, afterJSON, changeType, currentUserID(c)); err != nil {
 			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法记录批量排班历史", nil)
 			return
 		}
@@ -385,7 +386,7 @@ func (s *server) scheduleHistory(c *gin.Context) {
 	}
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT id, before_version, after_version, before_snapshot, after_snapshot, change_type, changed_by, created_at
-FROM schedule_revisions WHERE user_id = ? AND work_date = ? ORDER BY created_at DESC`, userID, date.String())
+FROM schedule_revisions WHERE user_id = $1 AND work_date = $2 ORDER BY created_at DESC`, userID, date.String())
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询排班历史", nil)
 		return
@@ -428,7 +429,7 @@ func (s *server) overview(c *gin.Context) {
 		return
 	}
 	var timezone string
-	if err := s.db.QueryRowContext(c.Request.Context(), `SELECT timezone FROM workspaces WHERE id = ?`, workspaceID).Scan(&timezone); err != nil {
+	if err := s.db.QueryRowContext(c.Request.Context(), `SELECT timezone FROM workspaces WHERE id = $1`, workspaceID).Scan(&timezone); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取工作区时区", nil)
 		return
 	}
@@ -449,7 +450,7 @@ func (s *server) overview(c *gin.Context) {
 	}
 	summary := calendarservice.Aggregate([]schedule.Date{date}, memberIDs, days)[0]
 	var pending int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM import_jobs WHERE workspace_id = ? AND upload_user_id = ? AND state IN ('PENDING', 'PARSING', 'NEEDS_REVIEW')`, workspaceID, currentUserID(c)).Scan(&pending); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM import_jobs WHERE workspace_id = $1 AND upload_user_id = $2 AND state IN ('PENDING', 'PARSING', 'NEEDS_REVIEW')`, workspaceID, currentUserID(c)).Scan(&pending); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
 		return
 	}
@@ -457,17 +458,17 @@ func (s *server) overview(c *gin.Context) {
 	monthStart := parsedDate.AddDate(0, 0, 1-parsedDate.Day())
 	monthEnd := monthStart.AddDate(0, 1, -1)
 	var scheduledThisMonth int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schedule_days WHERE user_id = ? AND work_date BETWEEN ? AND ?`, currentUserID(c), monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02")).Scan(&scheduledThisMonth); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schedule_days WHERE user_id = $1 AND work_date BETWEEN $2 AND $3`, currentUserID(c), monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02")).Scan(&scheduledThisMonth); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
 		return
 	}
 	completeness := float64(scheduledThisMonth) / float64(monthEnd.Day()) * 100
 	var nextWorking, nextRest sql.NullString
-	if err := s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'WORKING' ORDER BY work_date LIMIT 1`, currentUserID(c), date.String()).Scan(&nextWorking); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRow(`SELECT to_char(work_date, 'YYYY-MM-DD') FROM schedule_days WHERE user_id = $1 AND work_date >= $2 AND status = 'WORKING' ORDER BY work_date LIMIT 1`, currentUserID(c), date.String()).Scan(&nextWorking); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
 		return
 	}
-	if err := s.db.QueryRow(`SELECT DATE_FORMAT(work_date, '%Y-%m-%d') FROM schedule_days WHERE user_id = ? AND work_date >= ? AND status = 'REST' ORDER BY work_date LIMIT 1`, currentUserID(c), date.String()).Scan(&nextRest); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRow(`SELECT to_char(work_date, 'YYYY-MM-DD') FROM schedule_days WHERE user_id = $1 AND work_date >= $2 AND status = 'REST' ORDER BY work_date LIMIT 1`, currentUserID(c), date.String()).Scan(&nextRest); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法计算概览", nil)
 		return
 	}
@@ -514,7 +515,7 @@ func (s *server) listAudits(c *gin.Context) {
 	}
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT id, actor_user_id, action, target_type, target_id, details, created_at
-FROM audit_logs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200`, workspaceID)
+FROM audit_logs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 200`, workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询审计日志", nil)
 		return
@@ -549,5 +550,5 @@ func (s *server) recordAudit(c *gin.Context, workspaceID, actorID uint64, action
 	}
 	_, _ = s.db.ExecContext(c.Request.Context(), `
 INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target_id, request_id, ip_address, user_agent, details)
-VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, ?)`, workspaceID, actorID, action, targetType, targetID, requestID, c.ClientIP(), userAgent, payload)
+VALUES (NULLIF($1::bigint, 0), $2, $3, $4, $5, $6, $7, $8, $9)`, workspaceID, actorID, action, targetType, fmt.Sprint(targetID), requestID, c.ClientIP(), userAgent, payload)
 }

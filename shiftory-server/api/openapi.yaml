@@ -522,6 +522,7 @@ paths:
     get:
       tags: [Imports]
       operationId: getImport
+      description: 返回 items、importType、stage、round、runGeneration、nextRetryAt、errorCode、errorMessage、issues、reviewVersion、writeCount、actions、legacyResponseFormat；文字任务附 description、rules，且无原文件。历史 ai_raw_response 为规范化草稿，原始正文从受授权调用接口读取。
       responses:
         '200': { $ref: '#/components/responses/Success' }
   /workspaces/{workspaceId}/imports/{importId}/file:
@@ -550,8 +551,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [decisions]
+              required: [decisions, expectedReviewVersion]
               properties:
+                expectedReviewVersion: {type: integer, minimum: 1}
                 decisions:
                   type: array
                   items: { $ref: '#/components/schemas/ImportDecision' }
@@ -573,7 +575,10 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ScheduleInput' }
+            schema:
+              allOf:
+                - {$ref: '#/components/schemas/ScheduleInput'}
+                - {$ref: '#/components/schemas/ReviewVersionInput'}
       responses:
         '200': { $ref: '#/components/responses/Success' }
         '409': { $ref: '#/components/responses/Error' }
@@ -594,6 +599,11 @@ paths:
       tags: [Imports]
       operationId: commitImport
       description: 在一个事务中提交所有选中项；未决冲突或陈旧预览会整体拒绝。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReviewVersionInput'}
       responses:
         '200': { $ref: '#/components/responses/Success' }
         '409': { $ref: '#/components/responses/Error' }
@@ -608,6 +618,116 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Success' }
         '409': { $ref: '#/components/responses/Error' }
+  /workspaces/{workspaceId}/imports/text:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+    post:
+      tags: [Imports]
+      operationId: createTextImport
+      description: 单成员文字规则解析，最多 366 天；只生成审查草稿，未描述日期保持缺失。同键同输入返回原任务，不同输入返回 409。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetUserId, periodStart, periodEnd, description]
+              properties:
+                targetUserId: {type: integer, minimum: 1}
+                periodStart: {type: string, format: date}
+                periodEnd: {type: string, format: date}
+                description: {type: string, minLength: 1, maxLength: 10000}
+                instructions: {type: string, maxLength: 2000}
+                mappingHints: {type: object, maxProperties: 100, additionalProperties: {type: string}}
+                relatedImportId: {type: integer, minimum: 1, description: 重新生成所关联的旧任务，不覆盖旧草稿}
+      responses:
+        '202': {$ref: '#/components/responses/Success'}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /workspaces/{workspaceId}/imports/{importId}/retry:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    post:
+      tags: [Imports]
+      operationId: retryAIImport
+      description: 仅失败的 AI 任务可重试；创建新代次，保留历史调用。
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /workspaces/{workspaceId}/imports/{importId}/refresh-preview:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    post:
+      tags: [Imports]
+      operationId: refreshImportPreview
+      description: 不调用模型，保留人工修正并更新排班基线；发生基线变化的决定清空。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReviewVersionInput'}
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /workspaces/{workspaceId}/imports/{importId}/attempts:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+    get:
+      tags: [Imports]
+      operationId: listAIImportAttempts
+      description: 返回代次、业务轮次、状态及起止时间。
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /workspaces/{workspaceId}/imports/{importId}/attempts/{attemptId}/calls:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+      - name: attemptId
+        in: path
+        required: true
+        schema: {type: integer, minimum: 1}
+    get:
+      tags: [Imports]
+      operationId: listAIProviderCalls
+      description: 返回调用序号、模型、供应商、状态、HTTP 状态及起止时间，不含原文。
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /workspaces/{workspaceId}/imports/{importId}/attempts/{attemptId}/calls/{callId}/raw:
+    parameters:
+      - $ref: '#/components/parameters/WorkspaceId'
+      - $ref: '#/components/parameters/ImportId'
+      - name: attemptId
+        in: path
+        required: true
+        schema: {type: integer, minimum: 1}
+      - name: callId
+        in: path
+        required: true
+        schema: {type: integer, minimum: 1}
+    get:
+      tags: [Imports]
+      operationId: getAIProviderRaw
+      description: 返回该任务调用的原始模型正文；仅上传者或管理员可访问。
+      responses:
+        '200': {$ref: '#/components/responses/Success'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -692,6 +812,11 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   schemas:
+    ReviewVersionInput:
+      type: object
+      required: [expectedReviewVersion]
+      properties:
+        expectedReviewVersion: {type: integer, minimum: 1}
     SuccessEnvelope:
       type: object
       required: [data, requestId]

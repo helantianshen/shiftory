@@ -28,7 +28,7 @@ func (s *server) membership(workspaceID, userID uint64) (membership, error) {
 	var member membership
 	err := s.db.QueryRow(`
 SELECT user_id, role, status FROM workspace_members
-WHERE workspace_id = ? AND user_id = ? AND status = 'ACTIVE'`, workspaceID, userID).Scan(&member.UserID, &member.Role, &member.Status)
+WHERE workspace_id = $1 AND user_id = $2 AND status = 'ACTIVE'`, workspaceID, userID).Scan(&member.UserID, &member.Role, &member.Status)
 	return member, err
 }
 
@@ -69,15 +69,16 @@ func (s *server) createWorkspace(c *gin.Context) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(c.Request.Context(), `
-INSERT INTO workspaces (name, timezone, owner_user_id, created_by) VALUES (?, ?, ?, ?)`, strings.TrimSpace(request.Name), request.Timezone, userID, userID)
+	var id int64
+	err = tx.QueryRowContext(c.Request.Context(), `
+INSERT INTO workspaces (name, timezone, owner_user_id, created_by) VALUES ($1, $2, $3, $4) RETURNING id`, strings.TrimSpace(request.Name), request.Timezone, userID, userID).Scan(&id)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法创建工作区", nil)
 		return
 	}
-	id, _ := result.LastInsertId()
+
 	if _, err := tx.ExecContext(c.Request.Context(), `
-INSERT INTO workspace_members (workspace_id, user_id, role, status) VALUES (?, ?, 'OWNER', 'ACTIVE')`, id, userID); err != nil {
+INSERT INTO workspace_members (workspace_id, user_id, role, status) VALUES ($1, $2, 'OWNER', 'ACTIVE')`, id, userID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法创建所有者关系", nil)
 		return
 	}
@@ -93,7 +94,7 @@ INSERT INTO workspace_members (workspace_id, user_id, role, status) VALUES (?, ?
 	for index, shift := range defaults {
 		if _, err := tx.ExecContext(c.Request.Context(), `
 INSERT INTO shifts (workspace_id, name, code, start_time, end_time, cross_day, display_color, sort_order, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, shift.name, shift.code, shift.start, shift.end, shift.cross, shift.color, index, userID); err != nil {
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, id, shift.name, shift.code, shift.start, shift.end, shift.cross, shift.color, index, userID); err != nil {
 			failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法创建默认班次", nil)
 			return
 		}
@@ -111,7 +112,7 @@ func (s *server) listWorkspaces(c *gin.Context) {
 	rows, err := s.db.QueryContext(c.Request.Context(), `
 SELECT w.id, w.name, w.timezone, m.role
 FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id
-WHERE m.user_id = ? AND m.status = 'ACTIVE' ORDER BY w.created_at`, currentUserID(c))
+WHERE m.user_id = $1 AND m.status = 'ACTIVE' ORDER BY w.created_at`, currentUserID(c))
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询工作区", nil)
 		return
@@ -141,7 +142,7 @@ func (s *server) listMembers(c *gin.Context) {
 		return
 	}
 	var timezone string
-	if err := s.db.QueryRowContext(c.Request.Context(), `SELECT timezone FROM workspaces WHERE id = ?`, workspaceID).Scan(&timezone); err != nil {
+	if err := s.db.QueryRowContext(c.Request.Context(), `SELECT timezone FROM workspaces WHERE id = $1`, workspaceID).Scan(&timezone); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法读取工作区时区", nil)
 		return
 	}
@@ -158,12 +159,12 @@ func (s *server) listMembers(c *gin.Context) {
 SELECT u.id, u.username, u.email, u.display_name, COALESCE(u.avatar_url, ''), m.role, m.status, m.joined_at, m.left_at,
        (SELECT COUNT(*) FROM schedule_days sd
         WHERE sd.user_id = m.user_id
-          AND sd.work_date BETWEEN ? AND ?),
+          AND sd.work_date BETWEEN $1 AND $2),
        (SELECT MAX(ij.created_at) FROM import_jobs ij
         WHERE ij.workspace_id = m.workspace_id AND ij.target_user_id = m.user_id
           AND ij.state IN ('COMPLETED', 'ROLLED_BACK'))
 FROM workspace_members m JOIN users u ON u.id = m.user_id
-WHERE m.workspace_id = ? ORDER BY FIELD(m.role, 'OWNER', 'ADMIN', 'MEMBER'), u.display_name`, monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02"), workspaceID)
+WHERE m.workspace_id = $3 ORDER BY CASE m.role WHEN 'OWNER' THEN 1 WHEN 'ADMIN' THEN 2 WHEN 'MEMBER' THEN 3 ELSE 0 END, u.display_name`, monthStart.Format("2006-01-02"), monthEnd.Format("2006-01-02"), workspaceID)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法查询成员", nil)
 		return
@@ -224,7 +225,7 @@ func (s *server) createInvitation(c *gin.Context) {
 	var inviteEmail, inviteUsername string
 	if strings.TrimSpace(request.Username) != "" {
 		inviteUsername = strings.TrimSpace(request.Username)
-		err := s.db.QueryRowContext(c.Request.Context(), `SELECT username, email_normalized FROM users WHERE username_normalized = LOWER(?) AND status = 'ACTIVE'`, inviteUsername).Scan(&inviteUsername, &inviteEmail)
+		err = s.db.QueryRowContext(c.Request.Context(), `SELECT username, email_normalized FROM users WHERE username_normalized = LOWER($1) AND status = 'ACTIVE'`, inviteUsername).Scan(&inviteUsername, &inviteEmail)
 		if errors.Is(err, sql.ErrNoRows) {
 			failure(c, http.StatusNotFound, "USER_NOT_FOUND", "用户名不存在或已停用", nil)
 			return
@@ -250,14 +251,15 @@ func (s *server) createInvitation(c *gin.Context) {
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	hash := sha256.Sum256([]byte(token))
 	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
-	result, err := s.db.ExecContext(c.Request.Context(), `
+	var id int64
+	err = s.db.QueryRowContext(c.Request.Context(), `
 INSERT INTO workspace_invitations (workspace_id, email_normalized, role, token_hash, status, invited_by, expires_at)
-VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`, workspaceID, inviteEmail, request.Role, hash[:], currentUserID(c), expiresAt)
+VALUES ($1, $2, $3, $4, 'PENDING', $5, $6) RETURNING id`, workspaceID, inviteEmail, request.Role, hash[:], currentUserID(c), expiresAt).Scan(&id)
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法创建邀请", nil)
 		return
 	}
-	id, _ := result.LastInsertId()
+
 	s.recordAudit(c, workspaceID, currentUserID(c), "INVITATION_CREATED", "invitation", id, gin.H{"email": inviteEmail, "username": inviteUsername, "role": request.Role})
 	resultData := gin.H{"id": uint64(id), "token": token, "email": inviteEmail, "role": request.Role, "expiresAt": expiresAt}
 	if inviteUsername != "" {
@@ -288,10 +290,10 @@ func (s *server) acceptInvitation(c *gin.Context) {
 	var email, role, status string
 	var expiresAt time.Time
 	// 支持令牌或邀请 ID 定位，行锁与邮箱归属检查共同保护接受流程
-	query := `SELECT id, workspace_id, email_normalized, role, status, expires_at, invited_by FROM workspace_invitations WHERE token_hash = ? FOR UPDATE`
+	query := `SELECT id, workspace_id, email_normalized, role, status, expires_at, invited_by FROM workspace_invitations WHERE token_hash = $1 FOR UPDATE`
 	args := []any{hash[:]}
 	if request.InvitationID != 0 {
-		query = `SELECT id, workspace_id, email_normalized, role, status, expires_at, invited_by FROM workspace_invitations WHERE id = ? FOR UPDATE`
+		query = `SELECT id, workspace_id, email_normalized, role, status, expires_at, invited_by FROM workspace_invitations WHERE id = $1 FOR UPDATE`
 		args = []any{request.InvitationID}
 	}
 	err = tx.QueryRowContext(c.Request.Context(), query, args...).Scan(&invitationID, &workspaceID, &email, &role, &status, &expiresAt, &invitedBy)
@@ -300,18 +302,18 @@ func (s *server) acceptInvitation(c *gin.Context) {
 		return
 	}
 	var userEmail string
-	if err := tx.QueryRowContext(c.Request.Context(), `SELECT email_normalized FROM users WHERE id = ?`, userID).Scan(&userEmail); err != nil || userEmail != email {
+	if err := tx.QueryRowContext(c.Request.Context(), `SELECT email_normalized FROM users WHERE id = $1`, userID).Scan(&userEmail); err != nil || userEmail != email {
 		failure(c, http.StatusForbidden, "INVITATION_EMAIL_MISMATCH", "邀请邮箱与当前账号不匹配", nil)
 		return
 	}
 	// 接受时检查邀请人的当前权限，旧邀请不能绕过角色降级或成员禁用
 	var inviterRole string
-	if err := tx.QueryRowContext(c.Request.Context(), "SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ? AND status = 'ACTIVE' FOR UPDATE", workspaceID, invitedBy).Scan(&inviterRole); err != nil || (inviterRole != "OWNER" && inviterRole != "ADMIN") || (role == "ADMIN" && inviterRole != "OWNER") {
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 AND status = 'ACTIVE' FOR UPDATE", workspaceID, invitedBy).Scan(&inviterRole); err != nil || (inviterRole != "OWNER" && inviterRole != "ADMIN") || (role == "ADMIN" && inviterRole != "OWNER") {
 		failure(c, http.StatusForbidden, "INVITATION_UNAVAILABLE", "邀请人的权限已失效，请重新邀请", nil)
 		return
 	}
 	var existingRole, existingStatus string
-	existingErr := tx.QueryRowContext(c.Request.Context(), "SELECT role, status FROM workspace_members WHERE workspace_id = ? AND user_id = ? FOR UPDATE", workspaceID, userID).Scan(&existingRole, &existingStatus)
+	existingErr := tx.QueryRowContext(c.Request.Context(), "SELECT role, status FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE", workspaceID, userID).Scan(&existingRole, &existingStatus)
 	if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法检查成员状态", nil)
 		return
@@ -321,16 +323,16 @@ func (s *server) acceptInvitation(c *gin.Context) {
 		return
 	}
 	if existingErr == nil {
-		_, err = tx.ExecContext(c.Request.Context(), "UPDATE workspace_members SET role = ?, status = 'ACTIVE', joined_at = UTC_TIMESTAMP(6), left_at = NULL WHERE workspace_id = ? AND user_id = ?", role, workspaceID, userID)
+		_, err = tx.ExecContext(c.Request.Context(), "UPDATE workspace_members SET role = $1, status = 'ACTIVE', joined_at = statement_timestamp(), left_at = NULL WHERE workspace_id = $2 AND user_id = $3", role, workspaceID, userID)
 	} else {
-		_, err = tx.ExecContext(c.Request.Context(), "INSERT INTO workspace_members (workspace_id, user_id, role, status) VALUES (?, ?, ?, 'ACTIVE')", workspaceID, userID, role)
+		_, err = tx.ExecContext(c.Request.Context(), "INSERT INTO workspace_members (workspace_id, user_id, role, status) VALUES ($1, $2, $3, 'ACTIVE')", workspaceID, userID, role)
 	}
 	if err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法加入工作区", nil)
 		return
 	}
 	if _, err := tx.ExecContext(c.Request.Context(), `
-UPDATE workspace_invitations SET status = 'ACCEPTED', accepted_by = ?, accepted_at = CURRENT_TIMESTAMP(6) WHERE id = ?`, userID, invitationID); err != nil {
+UPDATE workspace_invitations SET status = 'ACCEPTED', accepted_by = $1, accepted_at = CURRENT_TIMESTAMP WHERE id = $2`, userID, invitationID); err != nil {
 		failure(c, http.StatusInternalServerError, "DATABASE_ERROR", "无法完成邀请", nil)
 		return
 	}

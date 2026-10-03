@@ -56,7 +56,7 @@ func TestCoreAPIWorkflow(t *testing.T) {
 	apiRequest(t, router, http.MethodPost, "/api/v1/invitations/accept", bob.AccessToken, map[string]any{"token": inviteToken})
 
 	// 测试使用固定排班日期，成员加入时间必须早于这些日期
-	if _, err := db.Exec(`UPDATE workspace_members SET joined_at = '2026-09-01 00:00:00' WHERE workspace_id = ?`, workspaceID); err != nil {
+	if _, err := db.Exec(`UPDATE workspace_members SET joined_at = '2026-09-01 00:00:00' WHERE workspace_id = $1`, workspaceID); err != nil {
 		t.Fatalf("set deterministic membership start: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestCoreAPIWorkflow(t *testing.T) {
 		t.Fatalf("expected both members missing on second day: %+v", second)
 	}
 	// 全部成员默认查询也应显示现有成员加入工作区之前的全局排班
-	if _, err := db.Exec(`UPDATE workspace_members SET joined_at = '2026-10-01 00:00:00' WHERE workspace_id = ?`, workspaceID); err != nil {
+	if _, err := db.Exec(`UPDATE workspace_members SET joined_at = '2026-10-01 00:00:00' WHERE workspace_id = $1`, workspaceID); err != nil {
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"", "&memberIds="} {
@@ -107,7 +107,7 @@ func TestCoreAPIWorkflow(t *testing.T) {
 		t.Fatalf("members must see complete confirmed schedules: %+v", items)
 	}
 	apiRequest(t, router, http.MethodPatch, fmt.Sprintf("/api/v1/workspaces/%d/members/%d", workspaceID, bob.UserID), alice.AccessToken, map[string]any{"role": "MEMBER", "status": "REMOVED"})
-	if _, err := db.Exec(`UPDATE workspace_members SET left_at = '2026-09-04 00:00:00' WHERE workspace_id = ? AND user_id = ?`, workspaceID, bob.UserID); err != nil {
+	if _, err := db.Exec(`UPDATE workspace_members SET left_at = '2026-09-04 00:00:00' WHERE workspace_id = $1 AND user_id = $2`, workspaceID, bob.UserID); err != nil {
 		t.Fatalf("set deterministic membership end: %v", err)
 	}
 	historical := apiRequest(t, router, http.MethodGet, fmt.Sprintf(
@@ -238,9 +238,10 @@ func TestSpreadsheetImportPreviewCommitAndRollback(t *testing.T) {
 		t.Fatalf("unmapped shift must explain the correction needed: %+v", items[2])
 	}
 	apiRequest(t, router, http.MethodPut, fmt.Sprintf("/api/v1/workspaces/%d/imports/%d/decisions", workspaceID, jobID), alice.AccessToken, map[string]any{
-		"decisions": []map[string]any{{"itemId": uint64(items[0].(map[string]any)["id"].(float64)), "decision": "USE_IMPORTED"}},
+		"expectedReviewVersion": 1,
+		"decisions":             []map[string]any{{"itemId": uint64(items[0].(map[string]any)["id"].(float64)), "decision": "USE_IMPORTED"}},
 	})
-	apiRequest(t, router, http.MethodPost, fmt.Sprintf("/api/v1/workspaces/%d/imports/%d/commit", workspaceID, jobID), alice.AccessToken, map[string]any{})
+	apiRequest(t, router, http.MethodPost, fmt.Sprintf("/api/v1/workspaces/%d/imports/%d/commit", workspaceID, jobID), alice.AccessToken, map[string]any{"expectedReviewVersion": 2})
 
 	afterCommit := apiRequest(t, router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%d/schedules/%d?start=2026-09-04&end=2026-09-05", workspaceID, alice.UserID), alice.AccessToken, nil)
 	committed := jsonArray(t, afterCommit, "data", "items")
@@ -287,8 +288,9 @@ func TestImageImportAccessDownloadAndCancellation(t *testing.T) {
 	if jsonString(t, upload, "data", "state") != "PENDING" {
 		t.Fatalf("expected pending image import: %+v", upload)
 	}
-	if wakeups != 1 {
-		t.Fatalf("expected one worker wakeup after commit, got %d", wakeups)
+	var events int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM import_outbox WHERE job_id=$1`, jobID).Scan(&events); err != nil || events != 1 || wakeups != 0 {
+		t.Fatalf("expected transactional outbox, events=%d wakeups=%d", events, wakeups)
 	}
 	bobImports := apiRequest(t, router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%d/imports", workspaceID), bob.AccessToken, nil)
 	if len(jsonArray(t, bobImports, "data", "items")) != 0 {
@@ -325,22 +327,22 @@ func TestUncertainImportItemCanBeCorrectedBeforeCommit(t *testing.T) {
 		"targetUserId": fmt.Sprint(alice.UserID), "periodStart": "2026-09-04", "periodEnd": "2026-09-04",
 	}, "file", "schedule.png", pngData)
 	jobID := jsonUint(t, upload, "data", "id")
-	if _, err := db.Exec(`UPDATE import_jobs SET state = 'NEEDS_REVIEW', item_count = 1, invalid_count = 1 WHERE id = ?`, jobID); err != nil {
+	if _, err := db.Exec(`UPDATE import_jobs SET state = 'NEEDS_REVIEW', item_count = 1, invalid_count = 1 WHERE id = $1`, jobID); err != nil {
 		t.Fatal(err)
 	}
-	result, err := db.Exec(`INSERT INTO import_items (import_job_id, work_date, item_type, issues, sort_order) VALUES (?, '2026-09-04', 'UNCERTAIN', JSON_ARRAY('无法识别班次'), 0)`, jobID)
+	var itemID int64
+	err = db.QueryRow(`INSERT INTO import_items (import_job_id, work_date, item_type, issues, sort_order) VALUES ($1, '2026-09-04', 'UNCERTAIN', jsonb_build_array('无法识别班次'), 0) RETURNING id`, jobID).Scan(&itemID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	itemID, _ := result.LastInsertId()
 
 	corrected := apiRequest(t, router, http.MethodPut, fmt.Sprintf("/api/v1/workspaces/%d/imports/%d/items/%d", workspaceID, jobID, itemID), alice.AccessToken, map[string]any{
-		"status": "WORKING", "note": "人工核对", "segments": []map[string]any{{"type": "TIME_RANGE", "startTime": "08:15", "endTime": "17:45", "crossDay": false}},
+		"expectedReviewVersion": 1, "status": "WORKING", "note": "人工核对", "segments": []map[string]any{{"type": "TIME_RANGE", "startTime": "08:15", "endTime": "17:45", "crossDay": false}},
 	})
 	if jsonString(t, corrected, "data", "type") != "NEW" {
 		t.Fatalf("corrected item should become committable: %+v", corrected)
 	}
-	apiRequest(t, router, http.MethodPost, fmt.Sprintf("/api/v1/workspaces/%d/imports/%d/commit", workspaceID, jobID), alice.AccessToken, map[string]any{})
+	apiRequest(t, router, http.MethodPost, fmt.Sprintf("/api/v1/workspaces/%d/imports/%d/commit", workspaceID, jobID), alice.AccessToken, map[string]any{"expectedReviewVersion": 2})
 	schedules := apiRequest(t, router, http.MethodGet, fmt.Sprintf("/api/v1/workspaces/%d/schedules/%d?start=2026-09-04&end=2026-09-04", workspaceID, alice.UserID), alice.AccessToken, nil)
 	items := jsonArray(t, schedules, "data", "items")
 	if len(items) != 1 || items[0].(map[string]any)["note"] != "人工核对" {
@@ -592,16 +594,7 @@ func jsonAt(t *testing.T, value map[string]any, path ...string) any {
 // openCleanTestDatabase 初始化并清理 HTTP 专用测试数据库，注册连接清理回调
 func openCleanTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	admin, err := database.Open(context.Background(), testutil.MySQLDSN(t, "mysql"))
-	if err != nil {
-		t.Fatalf("open MySQL for test database creation: %v", err)
-	}
-	if _, err := admin.Exec(`CREATE DATABASE IF NOT EXISTS shiftory_test_httpserver CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs`); err != nil {
-		_ = admin.Close()
-		t.Fatalf("create isolated test database: %v", err)
-	}
-	_ = admin.Close()
-	dsn := testutil.MySQLDSN(t, "shiftory_test_httpserver")
+	dsn := testutil.PostgresDSN(t, "shiftory_test_httpserver")
 	db, err := database.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
@@ -611,20 +604,12 @@ func openCleanTestDatabase(t *testing.T) *sql.DB {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	tables := []string{
-		"user_preferences", "audit_logs", "auth_refresh_tokens", "import_items", "schedule_revisions",
+		"import_provider_calls", "import_attempts", "import_outbox", "user_preferences", "audit_logs", "auth_refresh_tokens", "import_items", "schedule_revisions",
 		"schedule_segments", "schedule_days", "import_files", "import_jobs", "shift_aliases", "shifts",
 		"workspace_invitations", "workspace_members", "workspaces", "users",
 	}
-	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS=0"); err != nil {
-		t.Fatalf("disable foreign keys: %v", err)
-	}
-	for _, table := range tables {
-		if _, err := db.Exec("TRUNCATE TABLE " + table); err != nil {
-			t.Fatalf("truncate %s: %v", table, err)
-		}
-	}
-	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS=1"); err != nil {
-		t.Fatalf("enable foreign keys: %v", err)
+	if _, err := db.Exec("TRUNCATE TABLE " + strings.Join(tables, ",") + " RESTART IDENTITY CASCADE"); err != nil {
+		t.Fatal(err)
 	}
 	return db
 }

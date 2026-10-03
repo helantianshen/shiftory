@@ -15,15 +15,17 @@
 
 - 单仓库，Vue 3 前端与 Go 模块化单体后端。
 - 后端长期运行入口为 `shiftory-server/cmd/api`；API 启动时通过 GORM AutoMigrate 同步表结构，一次性结构同步入口为 `shiftory-server/cmd/migrate`。
-- 图片导入任务 Worker 作为 API 进程内的持久化 Runner 运行，不存在独立的 `cmd/worker` 部署入口。
-- MySQL 保存业务数据和图片导入任务队列；文件存储保存上传原文件。
+- AI 导入任务由 API 进程内的 Asynq 消费器运行，不存在独立的 `cmd/worker` 部署入口。
+- PostgreSQL 保存业务数据、导入任务与事务 Outbox；Redis 保存 Asynq 消息及供应商共享调度状态；文件存储保存上传原文件。
 
 ## 运行与配置
 
+- 后端和 AI 接入工具统一 Go 1.26.8；启动器／Docker 固定版本，直接 CLI 使用进程级 GOTOOLCHAIN=go1.26.8，GoLand 项目 SDK 使用相同版本
+
 - 后端以 `--env development|production` 选择模式，默认 production；`--config` 可指定 YAML。非空进程环境变量优先于 YAML；不读取 env 文件或旧 `SHIFTORY_ENV` / `SHIFTORY_ENV_FILE` 选择器。
-- 后端 YAML 按 log、server、mysql、jwt、ai、storage、worker 分组，环境变量采用 SHIFTORY_<分组>_<字段>。server.port 指定监听端口；mysql 使用 host、port、database、user、password，连接串由驱动生成，字符集固定 utf8mb4，时间解析使用 UTC。不接受运行时 DSN 或平铺 YAML 键。
+- 后端 YAML 按 log、server、postgres、jwt、ai、redis、tasks、storage 分组；worker 仅保留旧字段兼容，环境变量采用 SHIFTORY_<分组>_<字段>。server.port 指定监听端口；postgres 使用 host、port、database、user、password、sslmode，连接串统一编码，会话时区固定 UTC。不接受运行时 DSN 或平铺 YAML 键。
 - 本地配置为忽略的 `config/development.yaml` / `config/production.yaml`，可分发样例为对应 `*.example.yaml`。前端保留 Vite 原有 env 文件读取方式，不读取 YAML。
-- `scripts/start-dev.ps1` 负责向后端传递开发模式和 YAML 路径、执行迁移并启动 API 和前端；`-EnableAI` 只控制 API 内图片识别能力。
+- `scripts/start-dev.ps1` 负责向后端传递开发模式和 YAML 路径、执行迁移并启动 API 和前端；`-EnableAI` 只控制 API 内 AI 识别能力。
 - Linux 部署使用 `deploy/shiftory.service` 与 `scripts/start-linux.sh`，单机只运行 API 服务。
 - 前端固定使用 `pnpm@11.19.0`；启动器支持在没有全局 pnpm/Corepack 时通过 npm 缓存降级运行。
 
@@ -39,3 +41,5 @@
 
 - 项目仓库使用本地 `main` 分支和 `origin` 远程。
 - 提交、推送、PR 等操作必须以用户当前指令为准，不能从代码修改授权中推断出来。
+
+- 本机 PostgreSQL 为全局共享 Docker 容器 postgres，127.0.0.1:5432；Shiftory 使用独立 shiftory 数据库及应用账号，测试使用另一个账号和三个白名单测试库。管理配置在 /home/helan/.config/shared-services/postgres；仓库 Compose 连接外部共享数据库网络，不管理数据库容器。

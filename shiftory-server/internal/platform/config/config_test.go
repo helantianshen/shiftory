@@ -8,9 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5"
 )
 
 // clearConfigEnvironment 清理测试涉及的进程配置变量，并由测试框架恢复原值
@@ -102,7 +101,7 @@ func TestLoadDefaultsAndIgnoresEnvFiles(t *testing.T) {
 	if cfg.Environment != "production" || cfg.Address() != ":8080" || cfg.LogLevel != "info" || cfg.LogFormat != "json" || cfg.AIEnabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.MySQL.DSN() == "" || cfg.UploadDir == "" {
+	if cfg.Postgres.DSN() == "" || cfg.UploadDir == "" {
 		t.Fatal("required defaults missing")
 	}
 }
@@ -152,9 +151,9 @@ server:
   port: 9090
   web_dir: ./web
   public_origin: https://from-file.example
-mysql:
+postgres:
   host: localhost
-  port: 3306
+  port: 5432
   database: test
   user: user
   password: password
@@ -183,7 +182,7 @@ worker:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Environment != "production" || cfg.LogLevel != "warn" || cfg.LogFormat != "text" || cfg.Address() != ":9090" || cfg.MySQL.Database != "test" || cfg.MySQL.User != "user" || cfg.MySQL.Password != "password" || cfg.UploadDir != "./data/uploads" || cfg.WebDir != "./web" || cfg.PublicOrigin != "https://from-file.example" || cfg.JWTIssuer != "test-issuer" || cfg.JWTAudience != "test-audience" || cfg.JWTPrivateKey != "./keys/private.pem" || cfg.JWTPublicKey != "./keys/public.pem" || cfg.AIModel != "vision-test" || cfg.AIBaseURL != "https://ai.example/v1" || cfg.AIAPIKey != "test-key" || !cfg.AIEnabled || cfg.AIRequestTimeout.String() != "45s" || cfg.WorkerID != "test-worker" || cfg.WorkerPollPeriod.String() != "7s" || cfg.WorkerLease.String() != "3m0s" || cfg.WorkerMaxConcurrency != 4 {
+	if cfg.Environment != "production" || cfg.LogLevel != "warn" || cfg.LogFormat != "text" || cfg.Address() != ":9090" || cfg.Postgres.Database != "test" || cfg.Postgres.User != "user" || cfg.Postgres.Password != "password" || cfg.UploadDir != "./data/uploads" || cfg.WebDir != "./web" || cfg.PublicOrigin != "https://from-file.example" || cfg.JWTIssuer != "test-issuer" || cfg.JWTAudience != "test-audience" || cfg.JWTPrivateKey != "./keys/private.pem" || cfg.JWTPublicKey != "./keys/public.pem" || cfg.AIModel != "vision-test" || cfg.AIBaseURL != "https://ai.example/v1" || cfg.AIAPIKey != "test-key" || !cfg.AIEnabled || cfg.AIRequestTimeout.String() != "45s" || cfg.WorkerID != "test-worker" || cfg.WorkerPollPeriod.String() != "7s" || cfg.WorkerLease.String() != "3m0s" || cfg.WorkerMaxConcurrency != 4 {
 		t.Fatalf("YAML values were not loaded: %+v", cfg)
 	}
 	if os.Getenv("SHIFTORY_SERVER_PORT") != "" {
@@ -245,7 +244,7 @@ func TestLoadRejectsInvalidArguments(t *testing.T) {
 // TestLoadRejectsInvalidYAML 验证非法 YAML、未知字段和不支持的文件形式被拒绝
 func TestLoadRejectsInvalidYAML(t *testing.T) {
 	for _, content := range []string{
-		"server: {port: [}", "server: {port: 8080, port: 9090}", "mysql: {dsn: secret}", "mysql: {charset: utf8}", "server: null", "mysql: {password: null}", "server: {unknown: value}", "http_addr: [", "server:\n  port: 8080\nserver:\n  port: 9090\n", "unknown: value\n",
+		"server: {port: [}", "server: {port: 8080, port: 9090}", "postgres: {dsn: secret}", "mysql: {host: localhost}", "postgres: {charset: utf8}", "server: null", "postgres: {password: null}", "server: {unknown: value}", "http_addr: [", "server:\n  port: 8080\nserver:\n  port: 9090\n", "unknown: value\n",
 		"http_addr: [a, b]\n", "http_addr: {nested: value}\n", "- value\n", "null\n", "",
 		"server:\n  port: 8080\n---\nserver:\n  port: 9090\n", "env: development\n",
 	} {
@@ -267,7 +266,7 @@ func TestLoadRejectsInvalidYAML(t *testing.T) {
 // TestLoadRejectsInvalidSettings 验证无效日志、时间、并发与来源设置被拒绝
 func TestLoadRejectsInvalidSettings(t *testing.T) {
 	for _, tc := range []struct{ key, value string }{
-		{"server.port", "0"}, {"server.port", "65536"}, {"mysql.port", "-1"}, {"mysql.port", "1.5"}, {"log.level", "verbose"}, {"log.format", "xml"}, {"server.public_origin", "not-a-url"},
+		{"server.port", "0"}, {"server.port", "65536"}, {"postgres.port", "-1"}, {"postgres.port", "1.5"}, {"postgres.sslmode", "invalid"}, {"log.level", "verbose"}, {"log.format", "xml"}, {"server.public_origin", "not-a-url"},
 		{"worker.max_concurrency", "0"}, {"worker.max_concurrency", "-1"}, {"worker.max_concurrency", "1.5"},
 		{"worker.lease", "0s"}, {"worker.poll_interval", "-1s"}, {"ai.request_timeout", "oops"}, {"ai.enabled", "maybe"},
 	} {
@@ -308,34 +307,35 @@ func TestDistributedYAMLExamples(t *testing.T) {
 	}
 }
 
-// TestMySQLConnectionParameters 验证数据库连接编码保留特殊字符并固定时间与字符集选项
-func TestMySQLConnectionParameters(t *testing.T) {
+// TestPostgresConnectionParameters 验证数据库连接编码保留特殊字符并固定会话时区
+func TestPostgresConnectionParameters(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Chdir(t.TempDir())
-	writeConfig(t, "db.yaml", "mysql:\n  host: '::1'\n  port: 3307\n  database: 'test/name'\n  user: demo\n  password: ' p@ss:/?# word '\n")
+	writeConfig(t, "db.yaml", "postgres:\n  host: '::1'\n  port: 5433\n  database: 'test/name'\n  user: demo\n  password: ' p@ss:/?# word '\n")
 	cfg, err := Load("--config", "db.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := mysql.ParseDSN(cfg.MySQL.DSN())
+	parsed, err := pgx.ParseConfig(cfg.Postgres.DSN())
 	if err != nil {
 		t.Fatal("generated DSN cannot be parsed")
 	}
-	if parsed.Addr != "[::1]:3307" || parsed.DBName != "test/name" || parsed.User != "demo" || parsed.Passwd != " p@ss:/?# word " {
+	if parsed.Host != "::1" || parsed.Port != 5433 || parsed.Database != "test/name" || parsed.User != "demo" || parsed.Password != " p@ss:/?# word " {
 		t.Fatal("connection parameters changed during encoding")
 	}
-	if !parsed.ParseTime || parsed.Loc != time.UTC || parsed.Params["collation_connection"] != "'utf8mb4_0900_as_cs'" || !strings.Contains(cfg.MySQL.DSN(), "charset=utf8mb4") {
+	if parsed.RuntimeParams["timezone"] != "UTC" || parsed.TLSConfig != nil {
 		t.Fatal("fixed connection options missing")
 	}
-	t.Setenv("SHIFTORY_MYSQL_PASSWORD", " env-secret ")
+
+	t.Setenv("SHIFTORY_POSTGRES_PASSWORD", " env-secret ")
 	cfg, err = Load("--config", "db.yaml")
-	if err != nil || cfg.MySQL.Password != " env-secret " {
+	if err != nil || cfg.Postgres.Password != " env-secret " {
 		t.Fatal("environment password was not preserved")
 	}
-	t.Setenv("SHIFTORY_MYSQL_PASSWORD", "")
-	writeConfig(t, "db.yaml", "mysql:\n  password: ''\n")
+	t.Setenv("SHIFTORY_POSTGRES_PASSWORD", "")
+	writeConfig(t, "db.yaml", "postgres:\n  password: ''\n")
 	cfg, err = Load("--config", "db.yaml")
-	if err != nil || cfg.MySQL.Password != "" {
+	if err != nil || cfg.Postgres.Password != "" {
 		t.Fatal("explicit empty YAML password was not preserved")
 	}
 }
@@ -347,7 +347,7 @@ func TestLegacyEnvironmentIgnored(t *testing.T) {
 	t.Setenv("SHIFTORY_HTTP_ADDR", ":1234")
 	t.Setenv("SHIFTORY_DATABASE_DSN", "invalid-legacy-dsn")
 	cfg, err := Load()
-	if err != nil || cfg.Port != 8080 || cfg.MySQL.Host != "127.0.0.1" {
+	if err != nil || cfg.Port != 8080 || cfg.Postgres.Host != "127.0.0.1" {
 		t.Fatal("legacy environment affected configuration")
 	}
 }

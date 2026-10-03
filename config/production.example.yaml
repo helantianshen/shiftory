@@ -7,6 +7,55 @@ ai:
   enabled: false
   model: ""
   request_timeout: 90s
+  round_timeout: 5m
+  providers:
+    - id: doubao
+      supplier: doubao
+      kind: ark
+      enabled: true
+      order: 10
+      base_url: https://ark.cn-beijing.volces.com/api/v3
+      api_key: ""
+      model: doubao-seed-character-260628
+      image_enabled: true
+      text_enabled: true
+      response_format: prompt
+      thinking: disabled
+      request_timeout: 60s
+      max_concurrency: 2
+    - id: relay
+      supplier: relay
+      kind: openai
+      enabled: true
+      order: 20
+      base_url: ""
+      api_key: ""
+      model: ""
+      image_enabled: true
+      text_enabled: true
+      response_format: json_object
+      thinking: ""
+      request_timeout: 60s
+      max_concurrency: 2
+    - id: deepseek
+      supplier: deepseek
+      kind: openai
+      enabled: true
+      order: 40
+      base_url: https://api.deepseek.com
+      api_key: ""
+      model: "deepseek-flash"
+      image_enabled: true
+      text_enabled: true
+      response_format: json_object
+      thinking: ""
+      request_timeout: 60s
+      max_concurrency: 2
+  routing:
+    failure_threshold: 3
+    cooldown: 60s
+    max_response_bytes: 2097152
+    max_output_tokens: 4096
 # JWT 签发信息与密钥文件路径
 jwt:
   audience: shiftory-web
@@ -17,13 +66,15 @@ jwt:
 log:
   format: json
   level: info
-# 数据库连接参数，字符集与时区由程序固定为 utf8mb4 和 UTC
-mysql:
+# 数据库连接参数，数据库使用 UTF8 编码，会话时区固定为 UTC
+postgres:
   database: shiftory
   host: 127.0.0.1
   password: "123456"
-  port: 3306
-  user: root
+  # 本机连接使用 disable，远程可信证书连接使用 verify-full
+  sslmode: disable
+  port: 5432
+  user: shiftory
 # 服务监听端口、公开来源和前端静态文件目录
 server:
   port: 8080
@@ -38,3 +89,24 @@ worker:
   lease: 3m
   max_concurrency: 2
   poll_interval: 5s
+
+# Redis 与任务参数供正式重构使用，接入测试不会连接数据库或队列
+redis:
+  host: 127.0.0.1
+  port: 6379
+  username: ""
+  password: ""
+  db: 0
+  tls: false
+  dial_timeout: 5s
+  read_timeout: 5s
+  write_timeout: 5s
+tasks:
+  queue: ai_import
+  concurrency: 2
+  max_rounds: 3
+  retry_initial: 5s
+  retry_max: 5m
+  shutdown_timeout: 5m30s
+  outbox_poll_interval: 2s
+  cancellation_poll_interval: 2s

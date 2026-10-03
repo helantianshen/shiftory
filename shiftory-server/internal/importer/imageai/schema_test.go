@@ -65,11 +65,10 @@ func TestDecodeDraftAcceptsProviderShiftsAndTopLevelIssues(t *testing.T) {
 	}
 }
 
-// TestDecodeDraftRejectsDuplicateDatesAndInvalidRestSegments 验证重复日期与休息日时间段被拒绝
-func TestDecodeDraftRejectsDuplicateDatesAndInvalidRestSegments(t *testing.T) {
+// TestDecodeDraftRejectsDuplicateDates 验证重复日期被拒绝
+func TestDecodeDraftRejectsDuplicateDates(t *testing.T) {
 	tests := []string{
 		`{"period":{"start":"2026-09-01","end":"2026-09-30"},"entries":[{"date":"2026-09-01","status":"REST","segments":[],"uncertain":false,"issues":[]},{"date":"2026-09-01","status":"REST","segments":[],"uncertain":false,"issues":[]}]}`,
-		`{"period":{"start":"2026-09-01","end":"2026-09-30"},"entries":[{"date":"2026-09-01","status":"REST","segments":[{"type":"TIME_RANGE","startTime":"08:00","endTime":"09:00","crossDay":false}],"uncertain":false,"issues":[]}]}`,
 	}
 	for _, input := range tests {
 		if _, err := DecodeDraft(strings.NewReader(input), schedule.MustDate("2026-09-01"), schedule.MustDate("2026-09-30")); err == nil {

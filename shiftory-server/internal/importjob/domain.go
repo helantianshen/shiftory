@@ -1,4 +1,4 @@
-// Package importjob 管理导入状态与 MySQL 持久化图片任务，Runner 在 API 进程内执行
+// Package importjob 管理导入状态与 Postgres 业务事实，Asynq Worker 在 API 进程内执行
 package importjob
 
 // State 表示导入任务生命周期状态

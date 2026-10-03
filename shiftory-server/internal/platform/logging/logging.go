@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 )
 
 // New 创建进程日志器，支持 debug、info、warn、error 级别及 text、json 格式
@@ -33,7 +34,7 @@ func New(level, format string, output io.Writer) (*slog.Logger, error) {
 	var handler slog.Handler
 	switch format {
 	case "text":
-		handler = slog.NewTextHandler(output, options)
+		handler = &consoleHandler{output: output, mutex: &sync.Mutex{}, level: slogLevel, source: options.AddSource, color: os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"}
 	case "json":
 		handler = slog.NewJSONHandler(output, options)
 	default:

@@ -9,12 +9,13 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"shiftory-server/internal/schedule"
 )
 
 const (
-	PromptVersion = "2026-09-04.v1"
+	PromptVersion = "2026-10-02.v2"
 	SchemaVersion = "shiftory.image-schedule.v1"
 )
 
@@ -42,6 +43,7 @@ type Segment struct {
 
 // Entry 表示模型识别的单日状态、时间段及字段级不确定信息
 type Entry struct {
+	RuleIDs   []string  `json:"ruleIds,omitempty"`
 	Date      string    `json:"date" jsonschema:"description=Canonical YYYY-MM-DD"`
 	Status    string    `json:"status" jsonschema:"enum=WORKING,enum=REST"`
 	Note      string    `json:"note"`
@@ -51,10 +53,28 @@ type Entry struct {
 }
 
 // Draft 承载模型结构化草稿，仍需业务校验与人工确认
+type Call struct {
+	FinishReason string
+	OutputTokens int
+	ProviderID   string
+	Model        string
+	StartedAt    time.Time
+	FinishedAt   time.Time
+	HTTPStatus   int
+	Code         string
+	Raw          string
+	Normalized   []byte
+}
+
 type Draft struct {
-	Period  Period  `json:"period"`
-	Entries []Entry `json:"entries"`
-	Issues  []Issue `json:"issues,omitempty"`
+	RawResponse       string  `json:"-"`
+	ModelName         string  `json:"-"`
+	ProviderID        string  `json:"-"`
+	ConfigFingerprint string  `json:"-"`
+	RulesSnapshot     []byte  `json:"-"`
+	Period            Period  `json:"period"`
+	Entries           []Entry `json:"entries"`
+	Issues            []Issue `json:"issues,omitempty"`
 }
 
 // DecodeDraft 归一化已知模型输出别名后严格解码，并校验请求日期范围
@@ -90,20 +110,6 @@ func normalizeProviderPayload(payload json.RawMessage) ([]byte, error) {
 	if err := json.Unmarshal(payload, &fields); err != nil {
 		return nil, err
 	}
-	if period, ok := fields["period"]; ok {
-		var periodFields map[string]json.RawMessage
-		if json.Unmarshal(period, &periodFields) == nil {
-			for bad, good := range map[string]string{"、start": "start", "] start": "start", "[start": "start", "、end": "end", "] end": "end", "[end": "end"} {
-				if value, exists := periodFields[bad]; exists {
-					periodFields[good] = value
-					delete(periodFields, bad)
-				}
-			}
-			if normalized, marshalErr := json.Marshal(periodFields); marshalErr == nil {
-				fields["period"] = normalized
-			}
-		}
-	}
 	// 同义字段同时出现时拒绝选择，防止两份排班数据相互覆盖
 	_, hasEntries := fields["entries"]
 	schedules, hasSchedules := fields["schedules"]
@@ -123,13 +129,6 @@ func normalizeProviderPayload(payload json.RawMessage) ([]byte, error) {
 			var entryFields map[string]json.RawMessage
 			if err := json.Unmarshal(rawEntry, &entryFields); err != nil {
 				return nil, fmt.Errorf("invalid schedule entry %d: %w", index, err)
-			}
-			// 部分兼容网关会在 JSON 键名前混入标点，严格解析前仅修正常见别名
-			for bad, good := range map[string]string{"、start": "start", "] start": "start", "[start": "start", "、end": "end", "] end": "end", "[end": "end"} {
-				if value, ok := entryFields[bad]; ok {
-					entryFields[good] = value
-					delete(entryFields, bad)
-				}
 			}
 			_, hasSegments := entryFields["segments"]
 			shifts, hasShifts := entryFields["shifts"]
@@ -175,7 +174,7 @@ func normalizeProviderPayload(payload json.RawMessage) ([]byte, error) {
 						}
 					}
 					// 模型的 24:00 表达转换为午夜并显式标记跨日，供领域时间校验处理
-					for _, key := range []string{"startTime", "endTime"} {
+					for _, key := range []string{"endTime"} {
 						if value, ok := fields[key]; ok {
 							var clock string
 							if json.Unmarshal(value, &clock) == nil && strings.TrimSpace(clock) == "24:00" {
@@ -234,11 +233,17 @@ func (d Draft) Validate(requestedStart, requestedEnd schedule.Date) error {
 		return errors.New("image schedule period exceeds requested range")
 	}
 	// 逐日检查请求边界与重复日期，不确定条目必须携带可展示的问题说明
+	if d.Entries == nil || len(d.Entries) > 366 {
+		return errors.New("entries must be a bounded array")
+	}
 	seen := make(map[schedule.Date]bool, len(d.Entries))
 	for index, entry := range d.Entries {
 		date, err := schedule.ParseDate(entry.Date)
 		if err != nil || date.String() < requestedStart.String() || date.String() > requestedEnd.String() {
 			return fmt.Errorf("entry %d has an invalid or out-of-range date", index)
+		}
+		if entry.Segments == nil {
+			return errors.New("segments must be an array")
 		}
 		if seen[date] {
 			return fmt.Errorf("entry %d duplicates date %s", index, date)
@@ -247,15 +252,13 @@ func (d Draft) Validate(requestedStart, requestedEnd schedule.Date) error {
 		if entry.Status != string(schedule.StatusWorking) && entry.Status != string(schedule.StatusRest) {
 			return fmt.Errorf("entry %d has invalid status", index)
 		}
-		if entry.Status == string(schedule.StatusRest) && len(entry.Segments) != 0 {
-			return fmt.Errorf("entry %d: %w", index, schedule.ErrRestHasSegments)
-		}
+
 		if entry.Uncertain && len(entry.Issues) == 0 {
 			return fmt.Errorf("entry %d is uncertain but has no issues", index)
 		}
 		for segmentIndex, segment := range entry.Segments {
-			if err := validateSegment(segment); err != nil {
-				return fmt.Errorf("entry %d segment %d: %w", index, segmentIndex, err)
+			if segment.Type != "SHIFT" && segment.Type != "TIME_RANGE" {
+				return fmt.Errorf("entry %d segment %d has invalid type", index, segmentIndex)
 			}
 		}
 	}

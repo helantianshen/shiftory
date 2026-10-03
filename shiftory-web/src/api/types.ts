@@ -26,12 +26,13 @@ export interface ScheduleSegment {
 }
 
 export interface ScheduleDay {
+  ruleIds?: string[];
   id: number;
   workspaceId: number;
   userId: number;
   workDate: string;
   status: "WORKING" | "REST";
-  sourceType: "MANUAL" | "XLSX" | "XLS" | "IMAGE_AI";
+  sourceType: "MANUAL" | "XLSX" | "XLS" | "IMAGE_AI" | "TEXT_AI";
   sourceImportId?: number | null;
   note: string;
   version: number;
@@ -84,9 +85,40 @@ export interface ImportItem {
 }
 
 export interface ImportJob {
+  reviewVersion: number;
+  runGeneration: number;
+  stage: string;
+  description?: string;
+  errorMessage?: string;
+  errorCode?: string;
+  round?: number;
+  nextRetryAt?: string;
+  writeCount?: number;
+  rules?: {
+    rules: {
+      type: string;
+      date?: string;
+      start?: string;
+      end?: string;
+      weekdays?: number[];
+      anchorDate?: string;
+      cycleDays?: number;
+      dayOffsets?: number[];
+      status: string;
+      segments: {
+        type: string;
+        mappedShiftCode?: string;
+        startTime?: string;
+        endTime?: string;
+        crossDay: boolean;
+      }[];
+    }[];
+    issues: unknown[];
+  };
+  issues?: { field: string; message: string }[];
   id: number;
   targetUserId: number;
-  importType: "XLSX" | "XLS" | "IMAGE_AI";
+  importType: "XLSX" | "XLS" | "IMAGE_AI" | "TEXT_AI";
   state: string;
   periodStart: string;
   periodEnd: string;
