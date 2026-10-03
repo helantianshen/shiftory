@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=simple
 User=shiftory
 Group=shiftory
-WorkingDirectory=/opt/shiftory
-ExecStart=/opt/shiftory/bin/shiftory-api --config /etc/shiftory/production.yaml
+WorkingDirectory=/YOUR/DEPLOY/DIRECTORY
+ExecStart=/YOUR/DEPLOY/DIRECTORY/bin/shiftory-api --env production --config /YOUR/DEPLOY/DIRECTORY/config/production.yaml
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=360s
@@ -16,7 +16,7 @@ PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/shiftory /var/lib/shiftory/uploads /var/lib/shiftory/var
+ReadWritePaths=/YOUR/DEPLOY/DIRECTORY/uploads /YOUR/DEPLOY/DIRECTORY/var
 
 [Install]
 WantedBy=multi-user.target

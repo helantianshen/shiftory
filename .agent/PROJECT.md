@@ -26,7 +26,7 @@
 - 后端 YAML 按 log、server、postgres、jwt、ai、redis、tasks、storage 分组；worker 仅保留旧字段兼容，环境变量采用 SHIFTORY_<分组>_<字段>。server.port 指定监听端口；postgres 使用 host、port、database、user、password、sslmode，连接串统一编码，会话时区固定 UTC。不接受运行时 DSN 或平铺 YAML 键。
 - 本地配置为忽略的 `config/development.yaml` / `config/production.yaml`，可分发样例为对应 `*.example.yaml`。前端保留 Vite 原有 env 文件读取方式，不读取 YAML。
 - `scripts/start-dev.ps1` 负责向后端传递开发模式和 YAML 路径、执行迁移并启动 API 和前端；`-EnableAI` 只控制 API 内 AI 识别能力。
-- Linux 部署使用 `deploy/shiftory.service` 与 `scripts/start-linux.sh`，单机只运行 API 服务。
+- Linux 手动部署使用 `scripts/build-release.sh` 打包二进制、前端与公开配置样例，`scripts/start-services.sh` 提供全局 PostgreSQL／Redis Docker 启动与配置，`scripts/install-service.sh` 自动准备运行环境、填写 `deploy/shiftory.service` 路径并安装启动服务，步骤见 `docs/deployment.md`；单机只运行 API 服务，`scripts/start-linux.sh` 保留单独构建、迁移和运行入口。
 - 前端固定使用 `pnpm@11.19.0`；启动器支持在没有全局 pnpm/Corepack 时通过 npm 缓存降级运行。
 
 ## 验证基线

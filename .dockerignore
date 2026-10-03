@@ -1,6 +1,7 @@
 .git
 .idea
 .agent
+release
 shiftory-web/node_modules
 shiftory-web/dist
 shiftory-server/uploads

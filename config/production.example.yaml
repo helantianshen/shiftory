@@ -77,8 +77,8 @@ postgres:
   user: shiftory
 # 服务监听端口、公开来源和前端静态文件目录
 server:
-  port: 8080
-  public_origin: http://localhost:8080
+  port: 18763
+  public_origin: http://localhost:18763
   web_dir: ../shiftory-web/dist
 # 上传文件存储位置
 storage:

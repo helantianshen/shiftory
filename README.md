@@ -109,17 +109,16 @@ pnpm dev
 
 ### Linux 单机部署
 
-Linux 单机运行 API 二进制并连接 PostgreSQL、Redis，AI 消费器会在同一进程内启动。将生产 YAML 放到 `/etc/shiftory/production.yaml`，通过 `--config` 指定其绝对路径；`SHIFTORY_STORAGE_UPLOAD_DIR`、`SHIFTORY_SERVER_WEB_DIR` 和 JWT 密钥路径也建议使用绝对路径。API 与 Worker 必须共享同一个上传目录。
+采用 **后端二进制 + YAML 配置 + 前端构建文件**，手动复制到服务器指定目录；PostgreSQL 和 Redis 通过 Docker 启动，API 由 systemd 管理。完整步骤、配置填写和 service 占位见 [Linux 手动部署文档](docs/deployment.md)。
 
 ```bash
-./scripts/start-linux.sh build
-./scripts/start-linux.sh migrate --config /etc/shiftory/production.yaml
-sudo install -m 0755 deploy/shiftory.service /etc/systemd/system/shiftory.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now shiftory
+# 构建机：输出 bin/、web/、config/ 及部署脚本和 service 模板
+./scripts/build-release.sh
+# 服务器：复制部署包后拉取、启动并配置基础服务
+sudo bash /YOUR/DEPLOY/DIRECTORY/scripts/start-services.sh
 ```
 
-`deploy/shiftory.service` 默认使用 `/opt/shiftory/bin/shiftory-api`、`/etc/shiftory/production.yaml` 和 `shiftory` 系统用户；如果安装目录不同，请同步调整 unit 文件。数据库迁移只在发布时执行，不由 systemd 每次重启重复触发。
+脚本逐步输出状态。基础服务脚本使用全局容器名 `postgres`、`redis`；已有同名容器输出状态并跳过。部署包配置由公开样例生成，不包含本地密钥，生产样例端口为 `18763`，可直接修改 YAML 的 `server.port` 并重启应用，service 不固定端口或健康检查地址。复制部署包并填写配置后，运行 `sudo bash scripts/install-service.sh` 自动创建 systemd 服务并启动应用。API 每次启动都会执行结构同步，独立迁移命令可在发布前执行。
 
 ### Docker
 
