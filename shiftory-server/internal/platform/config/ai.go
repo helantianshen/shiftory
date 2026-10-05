@@ -1,12 +1,9 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,117 +12,65 @@ import (
 )
 
 type Provider struct {
-	ID             string `json:"id"`
-	Supplier       string `json:"supplier"`
-	Kind           string `json:"kind"`
-	Enabled        bool   `json:"enabled"`
-	Order          int    `json:"order"`
-	BaseURL        string `json:"base_url"`
-	APIKey         string `json:"api_key"`
-	Model          string `json:"model"`
-	ImageEnabled   bool   `json:"image_enabled"`
-	TextEnabled    bool   `json:"text_enabled"`
-	ResponseFormat string `json:"response_format"`
-	Thinking       string `json:"thinking"`
-	RequestTimeout string `json:"request_timeout"`
-	MaxConcurrency int    `json:"max_concurrency"`
+	ID             string `json:"id" mapstructure:"id"`
+	Supplier       string `json:"supplier" mapstructure:"supplier"`
+	Kind           string `json:"kind" mapstructure:"kind"`
+	Enabled        bool   `json:"enabled" mapstructure:"enabled"`
+	Order          int    `json:"order" mapstructure:"order"`
+	BaseURL        string `json:"base_url" mapstructure:"base_url"`
+	APIKey         string `json:"api_key" mapstructure:"api_key"`
+	Model          string `json:"model" mapstructure:"model"`
+	ImageEnabled   bool   `json:"image_enabled" mapstructure:"image_enabled"`
+	TextEnabled    bool   `json:"text_enabled" mapstructure:"text_enabled"`
+	ResponseFormat string `json:"response_format" mapstructure:"response_format"`
+	Thinking       string `json:"thinking" mapstructure:"thinking"`
+	RequestTimeout string `json:"request_timeout" mapstructure:"request_timeout"`
+	MaxConcurrency int    `json:"max_concurrency" mapstructure:"max_concurrency"`
 }
 type AIConfig struct {
-	Providers        []Provider
-	RoundTimeout     time.Duration
-	FailureThreshold int
-	Cooldown         time.Duration
-	MaxResponseBytes int
-	MaxOutputTokens  int
+	Enabled        bool          `mapstructure:"enabled"`
+	Model          string        `mapstructure:"model"`
+	BaseURL        string        `mapstructure:"base_url"`
+	APIKey         string        `mapstructure:"api_key"`
+	RequestTimeout time.Duration `mapstructure:"request_timeout"`
+	Providers      []Provider    `mapstructure:"providers"`
+	RoundTimeout   time.Duration `mapstructure:"round_timeout"`
+	Routing        RoutingConfig `mapstructure:"routing"`
 }
+
+type RoutingConfig struct {
+	FailureThreshold int           `mapstructure:"failure_threshold"`
+	Cooldown         time.Duration `mapstructure:"cooldown"`
+	MaxResponseBytes int           `mapstructure:"max_response_bytes"`
+	MaxOutputTokens  int           `mapstructure:"max_output_tokens"`
+}
+
 type RedisConfig struct {
-	Host         string
-	Port         int
-	Username     string
-	Password     string
-	DB           int
-	TLS          bool
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	Host         string        `mapstructure:"host"`
+	Port         int           `mapstructure:"port"`
+	Username     string        `mapstructure:"username"`
+	Password     string        `mapstructure:"password"`
+	DB           int           `mapstructure:"db"`
+	TLS          bool          `mapstructure:"tls"`
+	DialTimeout  time.Duration `mapstructure:"dial_timeout"`
+	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout time.Duration `mapstructure:"write_timeout"`
 }
 
 func (r RedisConfig) Address() string { return net.JoinHostPort(r.Host, strconv.Itoa(r.Port)) }
 
 type TasksConfig struct {
-	Queue                    string
-	Concurrency              int
-	MaxRounds                int
-	RetryInitial             time.Duration
-	RetryMax                 time.Duration
-	ShutdownTimeout          time.Duration
-	OutboxPollInterval       time.Duration
-	CancellationPollInterval time.Duration
+	Queue                    string        `mapstructure:"queue"`
+	Concurrency              int           `mapstructure:"concurrency"`
+	MaxRounds                int           `mapstructure:"max_rounds"`
+	RetryInitial             time.Duration `mapstructure:"retry_initial"`
+	RetryMax                 time.Duration `mapstructure:"retry_max"`
+	ShutdownTimeout          time.Duration `mapstructure:"shutdown_timeout"`
+	OutboxPollInterval       time.Duration `mapstructure:"outbox_poll_interval"`
+	CancellationPollInterval time.Duration `mapstructure:"cancellation_poll_interval"`
 }
 
-func loadAIConfig(c *Config, values map[string]string) error {
-	var err error
-	duration := func(path string, target *time.Duration, fallback time.Duration) {
-		if err == nil {
-			*target, err = durationOr(environmentKey(path), values, fallback)
-		}
-	}
-	integer := func(path string, target *int, fallback int) {
-		if err == nil {
-			*target, err = positiveIntOr(environmentKey(path), values, fallback)
-		}
-	}
-	duration("ai.round_timeout", &c.AI.RoundTimeout, 5*time.Minute)
-	duration("ai.routing.cooldown", &c.AI.Cooldown, time.Minute)
-	integer("ai.routing.failure_threshold", &c.AI.FailureThreshold, 3)
-	integer("ai.routing.max_response_bytes", &c.AI.MaxResponseBytes, 2<<20)
-	integer("ai.routing.max_output_tokens", &c.AI.MaxOutputTokens, 4096)
-	if err != nil {
-		return err
-	}
-	c.Redis.Host = envOr("SHIFTORY_REDIS_HOST", values, "127.0.0.1")
-	c.Redis.Username = envOr("SHIFTORY_REDIS_USERNAME", values, "")
-	c.Redis.Password = secretOr("SHIFTORY_REDIS_PASSWORD", values, "")
-	c.Redis.Port, err = portOr("SHIFTORY_REDIS_PORT", values, 6379)
-	if err != nil {
-		return err
-	}
-	c.Redis.DB, err = strconv.Atoi(envOr("SHIFTORY_REDIS_DB", values, "0"))
-	if err != nil || c.Redis.DB < 0 || c.Redis.DB > 15 {
-		return errors.New("invalid Redis DB")
-	}
-	c.Redis.TLS, err = boolOr("SHIFTORY_REDIS_TLS", values, false)
-	if err != nil {
-		return err
-	}
-	duration("redis.dial_timeout", &c.Redis.DialTimeout, 5*time.Second)
-	duration("redis.read_timeout", &c.Redis.ReadTimeout, 5*time.Second)
-	duration("redis.write_timeout", &c.Redis.WriteTimeout, 5*time.Second)
-	c.Tasks.Queue = envOr("SHIFTORY_TASKS_QUEUE", values, "ai_import")
-	if !regexp.MustCompile(`^[A-Za-z0-9_]+$`).MatchString(c.Tasks.Queue) {
-		return errors.New("invalid task queue")
-	}
-	integer("tasks.concurrency", &c.Tasks.Concurrency, 2)
-	integer("tasks.max_rounds", &c.Tasks.MaxRounds, 3)
-	duration("tasks.retry_initial", &c.Tasks.RetryInitial, 5*time.Second)
-	duration("tasks.retry_max", &c.Tasks.RetryMax, 5*time.Minute)
-	duration("tasks.shutdown_timeout", &c.Tasks.ShutdownTimeout, 330*time.Second)
-	duration("tasks.outbox_poll_interval", &c.Tasks.OutboxPollInterval, 2*time.Second)
-	duration("tasks.cancellation_poll_interval", &c.Tasks.CancellationPollInterval, 2*time.Second)
-	if err != nil {
-		return err
-	}
-	if c.Tasks.ShutdownTimeout <= c.AI.RoundTimeout || c.Tasks.RetryMax < c.Tasks.RetryInitial {
-		return errors.New("invalid task timeout or retry budget")
-	}
-	raw := values["SHIFTORY_AI_PROVIDERS"]
-	if raw != "" {
-		dec := json.NewDecoder(strings.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if dec.Decode(&c.AI.Providers) != nil {
-			return errors.New("invalid AI provider configuration")
-		}
-	}
+func validateProviders(c *Config) error {
 	ids, orders := map[string]bool{}, map[int]bool{}
 	var total time.Duration
 	for i := range c.AI.Providers {
@@ -134,38 +79,6 @@ func loadAIConfig(c *Config, values map[string]string) error {
 			return errors.New("invalid or duplicate AI provider id")
 		}
 		ids[strings.ToUpper(p.ID)] = true
-		// 环境覆盖只作用于已定义实例，不允许通过覆盖创建模型
-		data, _ := json.Marshal(p)
-		fields := map[string]json.RawMessage{}
-		_ = json.Unmarshal(data, &fields)
-		for k, v := range fields {
-			if k == "id" {
-				continue
-			}
-			name := "SHIFTORY_AI_PROVIDERS_" + strings.ToUpper(p.ID) + "_" + strings.ToUpper(k)
-			if override := os.Getenv(name); strings.TrimSpace(override) != "" {
-				switch string(v) {
-				case "true", "false":
-					b, e := strconv.ParseBool(override)
-					if e != nil {
-						return fmt.Errorf("invalid %s", name)
-					}
-					fields[k], _ = json.Marshal(b)
-				default:
-					if k == "order" || k == "max_concurrency" {
-						n, e := strconv.Atoi(override)
-						if e != nil {
-							return fmt.Errorf("invalid %s", name)
-						}
-						fields[k], _ = json.Marshal(n)
-					} else {
-						fields[k], _ = json.Marshal(override)
-					}
-				}
-			}
-		}
-		data, _ = json.Marshal(fields)
-		_ = json.Unmarshal(data, p)
 		if p.Order <= 0 || orders[p.Order] {
 			return errors.New("AI order must be unique and positive")
 		}
@@ -185,11 +98,11 @@ func loadAIConfig(c *Config, values map[string]string) error {
 		}
 		if p.Enabled {
 			total += timeout
-			if c.AIEnabled && (p.APIKey == "" || p.Model == "" || (!p.ImageEnabled && !p.TextEnabled)) {
+			if c.AI.Enabled && (p.APIKey == "" || p.Model == "" || (!p.ImageEnabled && !p.TextEnabled)) {
 				return errors.New("enabled AI provider is incomplete")
 			}
 			u, e := url.Parse(p.BaseURL)
-			if c.AIEnabled && (e != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "") {
+			if c.AI.Enabled && (e != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "") {
 				return errors.New("invalid AI endpoint")
 			}
 		}

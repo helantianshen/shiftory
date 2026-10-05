@@ -64,7 +64,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	store := deps.Store
 	if store == nil {
 		var err error
-		store, err = storage.NewLocal(deps.Config.UploadDir)
+		store, err = storage.NewLocal(deps.Config.Storage.UploadDir)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +87,7 @@ func New(deps Dependencies) (http.Handler, error) {
 
 	router.GET("/health/ai", func(c *gin.Context) {
 		ready := s.queueReady != nil && s.queueReady(c.Request.Context())
-		success(c, 200, gin.H{"enabled": s.config.AIEnabled, "queueReady": ready})
+		success(c, 200, gin.H{"enabled": s.config.AI.Enabled, "queueReady": ready})
 	})
 	router.GET("/metrics/ai", func(c *gin.Context) {
 		if s.aiMetrics == nil {
@@ -196,17 +196,17 @@ func (s *server) requestContext() gin.HandlerFunc {
 
 // configureSPA 在构建入口存在时提供静态文件与页面路由回退，API 未命中仍返回错误
 func (s *server) configureSPA(router *gin.Engine) {
-	index := filepath.Join(s.config.WebDir, "index.html")
+	index := filepath.Join(s.config.Server.WebDir, "index.html")
 	if _, err := os.Stat(index); err != nil {
 		return
 	}
-	assets := http.FileServer(http.Dir(s.config.WebDir))
+	assets := http.FileServer(http.Dir(s.config.Server.WebDir))
 	router.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
 			failure(c, http.StatusNotFound, "NOT_FOUND", "接口不存在", nil)
 			return
 		}
-		requested := filepath.Join(s.config.WebDir, filepath.FromSlash(strings.TrimPrefix(c.Request.URL.Path, "/")))
+		requested := filepath.Join(s.config.Server.WebDir, filepath.FromSlash(strings.TrimPrefix(c.Request.URL.Path, "/")))
 		if info, err := os.Stat(requested); err == nil && !info.IsDir() {
 			assets.ServeHTTP(c.Writer, c.Request)
 			return
@@ -219,7 +219,7 @@ func (s *server) configureSPA(router *gin.Engine) {
 func (s *server) cors() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
-		if origin != "" && origin == s.config.PublicOrigin {
+		if origin != "" && origin == s.config.Server.PublicOrigin {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Credentials", "true")
 			c.Header("Vary", "Origin")
@@ -439,14 +439,14 @@ VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8)`, actorID, action, targetType, fmt
 
 // setRefreshCookie 设置仅认证路径可用的 HttpOnly Cookie，HTTPS 来源启用 Secure
 func (s *server) setRefreshCookie(c *gin.Context, token string, expiry time.Time) {
-	secure := strings.HasPrefix(s.config.PublicOrigin, "https://")
+	secure := strings.HasPrefix(s.config.Server.PublicOrigin, "https://")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("shiftory_refresh", token, int(time.Until(expiry).Seconds()), "/api/v1/auth", "", secure, true)
 }
 
 // clearRefreshCookie 使用相同路径和安全属性使刷新 Cookie 立即过期
 func (s *server) clearRefreshCookie(c *gin.Context) {
-	secure := strings.HasPrefix(s.config.PublicOrigin, "https://")
+	secure := strings.HasPrefix(s.config.Server.PublicOrigin, "https://")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("shiftory_refresh", "", -1, "/api/v1/auth", "", secure, true)
 }
@@ -457,7 +457,7 @@ func (s *server) setCSRFCookie(c *gin.Context) error {
 	if _, err := rand.Read(random); err != nil {
 		return err
 	}
-	secure := strings.HasPrefix(s.config.PublicOrigin, "https://")
+	secure := strings.HasPrefix(s.config.Server.PublicOrigin, "https://")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("shiftory_csrf", base64.RawURLEncoding.EncodeToString(random), int(s.config.RefreshTokenTTL.Seconds()), "/", "", secure, false)
 	return nil
@@ -465,7 +465,7 @@ func (s *server) setCSRFCookie(c *gin.Context) error {
 
 // clearCSRFCookie 使站点根路径的 CSRF Cookie 立即过期
 func (s *server) clearCSRFCookie(c *gin.Context) {
-	secure := strings.HasPrefix(s.config.PublicOrigin, "https://")
+	secure := strings.HasPrefix(s.config.Server.PublicOrigin, "https://")
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("shiftory_csrf", "", -1, "/", "", secure, false)
 }
@@ -481,7 +481,7 @@ func (s *server) validCSRF(c *gin.Context) bool {
 func (s *server) validOrigin(c *gin.Context) bool {
 	origin := c.GetHeader("Origin")
 	// 非浏览器客户端通常不发送 Origin，浏览器请求则必须精确匹配公开来源
-	return origin == "" || origin == s.config.PublicOrigin
+	return origin == "" || origin == s.config.Server.PublicOrigin
 }
 
 // clientInfo 提取客户端 IP 和 User-Agent 作为会话记录信息

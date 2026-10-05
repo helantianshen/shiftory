@@ -299,7 +299,7 @@ func importDates(start, end schedule.Date) ([]schedule.Date, error) {
 func (s *server) createImageImport(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImportBytes+(128<<10))
 	s.logger.DebugContext(c.Request.Context(), "image upload received", "path", c.Request.URL.Path)
-	if !s.config.AIEnabled {
+	if !s.config.AI.Enabled {
 		s.logger.WarnContext(c.Request.Context(), "image upload rejected because AI is disabled")
 		failure(c, http.StatusServiceUnavailable, "AI_DISABLED", "图片 AI 导入功能未启用", nil)
 		return
@@ -852,12 +852,12 @@ FROM import_jobs WHERE id = $1 AND workspace_id = $2`, jobID, workspaceID)
 	}
 
 	kind, _ := job["importType"].(string)
-	if !s.config.AIEnabled && (kind == "TEXT_AI" || kind == "IMAGE_AI") && (state == "PENDING" || state == "PARSING") {
+	if !s.config.AI.Enabled && (kind == "TEXT_AI" || kind == "IMAGE_AI") && (state == "PENDING" || state == "PARSING") {
 		job["stage"] = "PAUSED"
 	}
 	member, err := s.membership(workspaceID, currentUserID(c))
 	canWrite := err == nil && s.userBelongsToWorkspace(workspaceID, job["targetUserId"].(uint64)) && (requireAdmin(member) || job["targetUserId"].(uint64) == currentUserID(c))
-	job["actions"] = gin.H{"review": canWrite && state == "NEEDS_REVIEW", "commit": canWrite && state == "NEEDS_REVIEW", "rollback": canWrite && state == "COMPLETED", "cancel": canWrite && (state == "PENDING" || state == "PARSING" || state == "NEEDS_REVIEW"), "retry": canWrite && s.config.AIEnabled && state == "FAILED" && (kind == "TEXT_AI" || kind == "IMAGE_AI"), "file": kind != "TEXT_AI"}
+	job["actions"] = gin.H{"review": canWrite && state == "NEEDS_REVIEW", "commit": canWrite && state == "NEEDS_REVIEW", "rollback": canWrite && state == "COMPLETED", "cancel": canWrite && (state == "PENDING" || state == "PARSING" || state == "NEEDS_REVIEW"), "retry": canWrite && s.config.AI.Enabled && state == "FAILED" && (kind == "TEXT_AI" || kind == "IMAGE_AI"), "file": kind != "TEXT_AI"}
 
 	job["items"] = importItemResponses(items)
 	success(c, http.StatusOK, job)

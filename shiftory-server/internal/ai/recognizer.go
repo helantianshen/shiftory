@@ -107,7 +107,7 @@ func (r *Recognizer) route(root context.Context, in imageai.Request) (imageai.Dr
 		}
 		if !lease {
 			anyRetry = true
-			next := time.Now().UTC().Add(r.cfg.Cooldown)
+			next := time.Now().UTC().Add(r.cfg.Routing.Cooldown)
 			if earliest.IsZero() || next.Before(earliest) {
 				earliest = next
 			}
@@ -217,7 +217,7 @@ func (r *Recognizer) acquire(ctx context.Context, p config.Provider) (bool, func
 		return false, release, &ProcessingError{Code: "AI_CONFIGURATION_ERROR", Stage: "ROUTING", SafeHint: "供应商配置已失效"}
 	}
 	if err == nil && n == -2 {
-		return false, release, &ProcessingError{Code: "PROVIDER_DEFERRED", Stage: "ROUTING", Retryable: true, SafeHint: "等待供应商冷却", RetryAt: time.Now().Add(r.cfg.Cooldown)}
+		return false, release, &ProcessingError{Code: "PROVIDER_DEFERRED", Stage: "ROUTING", Retryable: true, SafeHint: "等待供应商冷却", RetryAt: time.Now().Add(r.cfg.Routing.Cooldown)}
 	}
 	return n == 1, release, err
 }
@@ -232,11 +232,11 @@ func (r *Recognizer) recordHealth(ctx context.Context, p config.Provider, e *Pro
 	if e.Code == "CONTENT_REFUSED" {
 		return nil
 	}
-	ttl := r.cfg.Cooldown
+	ttl := r.cfg.Routing.Cooldown
 	if !e.RetryAt.IsZero() && time.Until(e.RetryAt) > ttl {
 		ttl = time.Until(e.RetryAt)
 	}
-	return redis.NewScript(`local n=redis.call('INCR',KEYS[1]);redis.call('PEXPIRE',KEYS[1],ARGV[2]*2);if n>=tonumber(ARGV[1]) then redis.call('SET',KEYS[2],'1','PX',ARGV[2]);redis.call('SET',KEYS[3],'1');end return n`).Run(ctx, r.redis, []string{prefix + ":failures", prefix + ":cool", prefix + ":probe_needed"}, r.cfg.FailureThreshold, ttl.Milliseconds()).Err()
+	return redis.NewScript(`local n=redis.call('INCR',KEYS[1]);redis.call('PEXPIRE',KEYS[1],ARGV[2]*2);if n>=tonumber(ARGV[1]) then redis.call('SET',KEYS[2],'1','PX',ARGV[2]);redis.call('SET',KEYS[3],'1');end return n`).Run(ctx, r.redis, []string{prefix + ":failures", prefix + ":cool", prefix + ":probe_needed"}, r.cfg.Routing.FailureThreshold, ttl.Milliseconds()).Err()
 }
 
 type boundedTransport struct {
@@ -293,7 +293,7 @@ func (r *Recognizer) generate(root context.Context, p config.Provider, in imagea
 	timeout, _ := time.ParseDuration(p.RequestTimeout)
 	ctx, cancel := context.WithTimeout(root, timeout)
 	defer cancel()
-	transport := &boundedTransport{base: http.DefaultTransport, max: int64(r.cfg.MaxResponseBytes)}
+	transport := &boundedTransport{base: http.DefaultTransport, max: int64(r.cfg.Routing.MaxResponseBytes)}
 	client := &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	var target any = new(imageai.Draft)
 	if in.Description != "" {
@@ -308,7 +308,7 @@ func (r *Recognizer) generate(root context.Context, p config.Provider, in imagea
 	var err error
 	if p.Kind == "ark" {
 		zero := 0
-		c := &ark.ChatModelConfig{APIKey: p.APIKey, Model: p.Model, BaseURL: p.BaseURL, HTTPClient: client, Timeout: &timeout, RetryTimes: &zero, MaxTokens: &r.cfg.MaxOutputTokens}
+		c := &ark.ChatModelConfig{APIKey: p.APIKey, Model: p.Model, BaseURL: p.BaseURL, HTTPClient: client, Timeout: &timeout, RetryTimes: &zero, MaxTokens: &r.cfg.Routing.MaxOutputTokens}
 		if p.Thinking != "" {
 			c.Thinking = &arkmodel.Thinking{Type: arkmodel.ThinkingType(p.Thinking)}
 		}
@@ -320,7 +320,7 @@ func (r *Recognizer) generate(root context.Context, p config.Provider, in imagea
 			cm, err = ark.NewChatModel(ctx, c)
 		}
 	} else {
-		c := &openai.ChatModelConfig{APIKey: p.APIKey, Model: p.Model, BaseURL: p.BaseURL, HTTPClient: client, MaxTokens: &r.cfg.MaxOutputTokens}
+		c := &openai.ChatModelConfig{APIKey: p.APIKey, Model: p.Model, BaseURL: p.BaseURL, HTTPClient: client, MaxTokens: &r.cfg.Routing.MaxOutputTokens}
 		if p.ResponseFormat != "prompt" {
 			c.ResponseFormat = &openai.ChatCompletionResponseFormat{}
 			err = json.Unmarshal([]byte(format), c.ResponseFormat)

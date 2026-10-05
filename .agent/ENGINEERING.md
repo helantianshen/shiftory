@@ -34,7 +34,7 @@
 
 ## 配置、日志与部署
 
-- API 与 migrate 共用 `--env` 和 `--config`，默认生产模式；非空进程环境变量优先于 YAML，其次使用内置默认值。后端不加载 env 文件，前端继续使用 Vite 的 `.env*` 与 `VITE_*`。
+- API 与 migrate 共用 Viper 启动配置加载器和 `--env`、`--config`，默认生产模式；非空进程环境变量优先于 YAML，其次使用内置默认值。配置按 YAML 分组解码为带 `mapstructure` 标签的结构体，只在启动时加载，不监听文件或重载；后端不加载 env 文件，前端继续使用 Vite 的 `.env*` 与 `VITE_*`。
 - 后端 YAML 按 log、server、postgres、jwt、ai、redis、tasks、storage 分组；worker 仅保留旧字段兼容，环境变量采用 SHIFTORY_<分组>_<字段>。server.port 指定监听端口；postgres 使用 host、port、database、user、password、sslmode，连接串统一编码，会话时区固定 UTC。不接受运行时 DSN 或平铺 YAML 键。
 - 未显式指定配置时，按工作目录、父目录、祖父目录查找首个 `config/<模式>.yaml`；文件不合并。显式路径缺失、非法 YAML、未知键或非法值会报错。相对路径以进程工作目录为基准。
 - 样例配置只保存可分发值；实际 YAML、JWT 私钥、模型密钥与上传文件不能进入版本控制。生产部署需要持久化上传目录与 JWT 密钥。

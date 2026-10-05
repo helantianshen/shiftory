@@ -38,12 +38,12 @@ func main() {
 	if cfg.MigrateLegacyAI {
 		log.Fatal("--migrate-ai-jobs is only valid for cmd/migrate")
 	}
-	logger, err := logging.New(cfg.LogLevel, cfg.LogFormat, nil)
+	logger, err := logging.New(cfg.Log.Level, cfg.Log.Format, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	slog.SetDefault(logger)
-	logger.Info("configuration loaded", "environment", cfg.Environment, "log_level", cfg.LogLevel, "log_format", cfg.LogFormat, "http_addr", cfg.Address(), "ai_enabled", cfg.AIEnabled)
+	logger.Info("configuration loaded", "environment", cfg.Environment, "log_level", cfg.Log.Level, "log_format", cfg.Log.Format, "http_addr", cfg.Address(), "ai_enabled", cfg.AI.Enabled)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// 建立数据库、上传目录和持久化签名密钥，依赖失败时不开放 HTTP 服务
@@ -58,24 +58,24 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		log.Fatal(err)
 	}
-	store, err := storage.NewLocal(cfg.UploadDir)
+	store, err := storage.NewLocal(cfg.Storage.UploadDir)
 	if err != nil {
 		logger.Error("file storage initialization failed", "error", err)
 		log.Fatal(err)
 	}
-	privateKey, publicKey, err := jwtkeys.LoadOrCreate(cfg.JWTPrivateKey, cfg.JWTPublicKey)
+	privateKey, publicKey, err := jwtkeys.LoadOrCreate(cfg.JWT.PrivateKeyFile, cfg.JWT.PublicKeyFile)
 	if err != nil {
 		logger.Error("JWT key initialization failed", "error", err)
 		log.Fatal(err)
 	}
-	tokens := auth.NewTokenManager(privateKey, publicKey, "shiftory-ed25519-v1", cfg.JWTIssuer, cfg.JWTAudience, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
+	tokens := auth.NewTokenManager(privateKey, publicKey, "shiftory-ed25519-v1", cfg.JWT.Issuer, cfg.JWT.Audience, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	redisClient := redis.NewClient(importjob.RedisOptions(cfg.Redis))
 	defer redisClient.Close()
 	var queue *importjob.Queue
 	dispatcherCtx, stopDispatcher := context.WithCancel(context.Background())
 	defer stopDispatcher()
 	dispatcherDone := make(chan struct{})
-	if cfg.AIEnabled {
+	if cfg.AI.Enabled {
 		recognizer, e := ai.New(ctx, cfg.AI, redisClient)
 		if e != nil {
 			log.Fatal("AI workflow configuration failed")

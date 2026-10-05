@@ -134,6 +134,8 @@ COMPOSE_DISABLE_ENV_FILE=1 docker compose config --quiet
 
 Compose 自身具有隐式读取根目录 `.env` 的行为，因此部署命令显式设置 `COMPOSE_DISABLE_ENV_FILE=1`。这不会禁用前端 Vite 读取 `shiftory-web/.env*`。
 
+后端通过 Viper 在启动时将 YAML、非空进程环境变量和默认值解码为配置结构体；不监听文件或自动重载，配置修改后需重启进程。
+
 ## AI 导入与文字排班
 
 在实际 `config/development.yaml` 中配置 `ai`、`redis`、`tasks`，格式见 [开发样例](config/development.example.yaml) 和 [AI Spec](docs/specs/ai-import-eino.md)。本地已填写的供应商配置已合并到忽略的开发配置。正式进程在启动时读取配置，修改供应商或 `order` 后重启生效。

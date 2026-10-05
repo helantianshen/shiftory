@@ -31,7 +31,7 @@ type aiImportInput struct {
 }
 
 func (s *server) createTextImport(c *gin.Context) {
-	if !s.config.AIEnabled {
+	if !s.config.AI.Enabled {
 		failure(c, 503, "AI_DISABLED", "AI 导入未启用", nil)
 		return
 	}
@@ -228,7 +228,7 @@ func (s *server) retryImport(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !s.config.AIEnabled {
+	if !s.config.AI.Enabled {
 		failure(c, 503, "AI_DISABLED", "AI 导入未启用", nil)
 		return
 	}

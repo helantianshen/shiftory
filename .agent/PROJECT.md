@@ -22,7 +22,7 @@
 
 - 后端和 AI 接入工具统一 Go 1.26.8；启动器／Docker 固定版本，直接 CLI 使用进程级 GOTOOLCHAIN=go1.26.8，GoLand 项目 SDK 使用相同版本
 
-- 后端以 `--env development|production` 选择模式，默认 production；`--config` 可指定 YAML。非空进程环境变量优先于 YAML；不读取 env 文件或旧 `SHIFTORY_ENV` / `SHIFTORY_ENV_FILE` 选择器。
+- 后端使用 Viper 在启动时加载分组配置结构体，不启用热更新；以 `--env development|production` 选择模式，默认 production；`--config` 可指定 YAML。非空进程环境变量优先于 YAML；不读取 env 文件或旧 `SHIFTORY_ENV` / `SHIFTORY_ENV_FILE` 选择器。
 - 后端 YAML 按 log、server、postgres、jwt、ai、redis、tasks、storage 分组；worker 仅保留旧字段兼容，环境变量采用 SHIFTORY_<分组>_<字段>。server.port 指定监听端口；postgres 使用 host、port、database、user、password、sslmode，连接串统一编码，会话时区固定 UTC。不接受运行时 DSN 或平铺 YAML 键。
 - 本地配置为忽略的 `config/development.yaml` / `config/production.yaml`，可分发样例为对应 `*.example.yaml`。前端保留 Vite 原有 env 文件读取方式，不读取 YAML。
 - `scripts/start-dev.ps1` 负责向后端传递开发模式和 YAML 路径、执行迁移并启动 API 和前端；`-EnableAI` 只控制 API 内 AI 识别能力。
