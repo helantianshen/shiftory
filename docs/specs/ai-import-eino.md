@@ -29,7 +29,7 @@
 
 正式排班按 `(user_id, work_date)` 全局唯一。导入任务、成员选择、班次映射和授权仍属于工作区；不能借此扩展为无工作区导入。个人排班的 `/me/schedules` 全局范围继续有效。
 
-后端加载器已支持供应商数组和 routing、redis、tasks。正式 API 读取 development.yaml；独立联网测试读取 ai.development.yaml，不自动合并。实际 AI 配置已合并入本地开发配置，配置变更在重启后生效。
+后端加载器已支持供应商数组和 routing、redis、tasks。正式 API 读取 development.yaml。实际 AI 配置已合并入本地开发配置，配置变更在重启后生效。
 
 ## 4. 架构与边界
 
@@ -99,7 +99,7 @@ segments 使用统一 SHIFT／TIME_RANGE 合同；CYCLE 同一状态／时间段
 
 ## 8. 供应商配置与适配
 
-开发配置见 `config/ai.development.example.yaml`；本地实际文件是被 Git 忽略的 `config/ai.development.yaml`。
+开发配置见 `config/development.example.yaml`；本地实际文件是被 Git 忽略的 `config/development.yaml`。
 
 | 字段 | 合同 |
 | --- | --- |

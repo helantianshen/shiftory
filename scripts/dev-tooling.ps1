@@ -1,4 +1,4 @@
-# 开发工具解析与命令转义函数，供启动器及其测试共同使用
+# 开发工具解析与命令转义函数，供启动器使用
 # Resolve-PnpmInvocation 按 pnpm、Corepack、npm 顺序选择运行入口，npm 后备入口使用指定的精确版本
 function Resolve-PnpmInvocation {
     param(

@@ -31,11 +31,10 @@
 
 ## 验证基线
 
-- 后端验证：`go test ./... -count=1`、`go vet ./...`。
-- 架构验证：`scripts/tests/embedded-worker-architecture.Tests.ps1`。
-- 开发工具与 IDE 配置验证：`scripts/tests/dev-tooling.Tests.ps1`、`scripts/tests/goland-run-config.Tests.ps1`。
+- 后端验证：`go build ./...`、`go vet ./...`。
+- 前端验证：`pnpm build`，包含类型检查和生产构建。
 - 启动器验证：`scripts/start-dev.ps1 -ValidateOnly`。
-- 修改后应运行与变更范围匹配的测试，并执行 `git diff --check`。
+- 仓库不保留自动化测试代码；修改后应执行匹配范围的构建或手工验证，以及 `git diff --check`。
 
 ## Git 边界
 

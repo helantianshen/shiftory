@@ -29,7 +29,7 @@ Shiftory 是面向小团队的排班协同应用。产品范围包括 JWT 登录
 | `--env development` | 开发模式 |
 | `--config /path/to/config.yaml` | 显式指定 YAML 文件；不改变 `--env` 选择的模式 |
 
-后端和独立 AI 测试模块统一使用 Go 1.26.8。Linux 构建脚本、PowerShell 开发启动器及 Docker 固定该版本。若系统默认 Go 较新，直接执行 Go 命令前，在当前终端设置 `export GOTOOLCHAIN=go1.26.8`（Bash）或 `$env:GOTOOLCHAIN = "go1.26.8"`（PowerShell）；`go.mod` 的最低版本要求不会自动将较新的系统工具链降级。GoLand 项目 SDK 也应选择 1.26.8。
+后端使用 Go 1.26.8。Linux 构建脚本、PowerShell 开发启动器及 Docker 固定该版本。若系统默认 Go 较新，直接执行 Go 命令前，在当前终端设置 `export GOTOOLCHAIN=go1.26.8`（Bash）或 `$env:GOTOOLCHAIN = "go1.26.8"`（PowerShell）；`go.mod` 的最低版本要求不会自动将较新的系统工具链降级。GoLand 项目 SDK 也应选择 1.26.8。
 
 后端配置优先级为：**非空进程环境变量 > 所选 YAML > 内置默认值**。YAML 使用 `log`、`server`、`postgres`、`jwt`、`ai`、`redis`、`tasks`、`storage` 分组（旧 `worker` 字段仅兼容配置加载），环境变量按 `SHIFTORY_<分组>_<字段>` 命名，例如供应商 `relay` 的 `api_key` 对应 `SHIFTORY_AI_PROVIDERS_RELAY_API_KEY`、`server.port` 对应 `SHIFTORY_SERVER_PORT`。空白环境变量沿用文件值；布尔值 `false` 可正常覆盖 `true`。密钥和数据库密码保留原始空白，YAML 中显式空密码表示无密码。可配置项列在 `config/development.example.yaml` 和 `config/production.example.yaml` 中。
 
@@ -136,7 +136,7 @@ Compose 自身具有隐式读取根目录 `.env` 的行为，因此部署命令�
 
 ## AI 导入与文字排班
 
-在实际 `config/development.yaml` 中配置 `ai`、`redis`、`tasks`，格式见 [开发样例](config/development.example.yaml) 和 [AI Spec](docs/specs/ai-import-eino.md)。本地已填写的供应商配置已合并到忽略的开发配置；独立 `ai.development.yaml` 仍供联网测试使用，两份文件不会自动合并，后续修改需同步到正式开发配置。正式进程在启动时读取配置，修改供应商或 `order` 后重启生效。
+在实际 `config/development.yaml` 中配置 `ai`、`redis`、`tasks`，格式见 [开发样例](config/development.example.yaml) 和 [AI Spec](docs/specs/ai-import-eino.md)。本地已填写的供应商配置已合并到忽略的开发配置。正式进程在启动时读取配置，修改供应商或 `order` 后重启生效。
 
 供应商优先级按唯一正整数 `order` 升序，默认字节、中转站、DeepSeek。字节使用 Eino Ark，其余使用 OpenAI Chat Completions。各模型单独配置图片／文字能力、格式、超时及并发；错误自动切换，整轮失败后按有限预算重试。无需另加协程池。
 
@@ -155,36 +155,22 @@ go run ./cmd/migrate --env development --config ../config/development.yaml --mig
 
 ## 验证
 
-后端集成测试需要预先创建 `shiftory_test`、`shiftory_test_httpserver`、`shiftory_test_importjob` 数据库，由独立测试账号拥有。本机已经配置这些库。`SHIFTORY_TEST_DATABASE_DSN` 仅通过进程环境提供连接参数；测试强制选择三个白名单库，不使用 DSN 指定的业务库。结构测试重建 `shiftory_test` 的 public schema，其他测试通过外键安全的 TRUNCATE 清理各自库。应用账号不拥有测试库，连接失败会使测试失败。
-
-本机测试凭据位于仓库外的 `~/.config/shared-services/postgres/shiftory-test-dsn`，权限为 0600。Linux 验证：
+仓库不保留自动化测试代码。后端执行编译和静态检查：
 
 ```bash
 cd shiftory-server
-export SHIFTORY_TEST_DATABASE_DSN="$(cat ~/.config/shared-services/postgres/shiftory-test-dsn)"
-GOTOOLCHAIN=go1.26.8 go test ./... -count=1
-GOTOOLCHAIN=go1.26.8 go test -race ./... -count=1
+GOTOOLCHAIN=go1.26.8 go build ./...
 GOTOOLCHAIN=go1.26.8 go vet ./...
 ```
 
-PowerShell 或其他机器需自行设置相同变量，使用其测试账号的 PostgreSQL 连接串。真实外部模型测试需显式设置 `SHIFTORY_LIVE_AI=true`，默认不发送模型请求。
-
-前端验证：
+前端执行类型检查和生产构建：
 
 ```powershell
 cd shiftory-web
-pnpm type-check
-pnpm test
-pnpm build-only
+pnpm build
 ```
 
-API 启动后，可从仓库根目录运行真实 HTTP 验收：
-
-```powershell
-.\scripts\accept-api.ps1
-```
-
-脚本覆盖健康检查、注册/登录 JWT、工作区、班次、排班、成员可见完整日历详情、偏好、Refresh 轮换与 CSRF，以及 Excel 模板下载。
+编译通过不代表业务流程已完成运行验收，实际功能需在对应运行环境中手工验证。
 
 ## 关键边界
 
@@ -211,7 +197,7 @@ psql -h 127.0.0.1 -p 5432 -U shiftory -d shiftory -v ON_ERROR_STOP=1 -f shiftory
 
 数据库由实例管理员预先创建，脚本在指定数据库中创建结构并初始化自增序列，仅供空库执行，不自动重置现有数据库，不在服务启动时重复导入。请在使用后修改开发初始密码。初始化 SQL 导入后可直接启动 API，结构同步不会覆盖初始账号。
 
-旧版 Goose SQL 和依赖已移除。AutoMigrate 不会删除废弃字段，也不负责字段重命名或旧约束的数据转换；已有开发库应先确认需保留的数据，再人工处理不兼容结构，不能通过自动清库来解决。模型结构变更时须同步更新初始化 SQL，并运行数据库集成测试验证二者一致。
+旧版 Goose SQL 和依赖已移除。AutoMigrate 不会删除废弃字段，也不负责字段重命名或旧约束的数据转换；已有开发库应先确认需保留的数据，再人工处理不兼容结构，不能通过自动清库来解决。模型结构变更时须同步更新初始化 SQL，并在隔离数据库中验证二者一致。
 
 数据库排序规则不改变应用层规范化：用户名、邮箱和班次别名仍按现有规则转小写、去首尾空白，因此对应业务匹配不会自动变成大小写敏感。
 
