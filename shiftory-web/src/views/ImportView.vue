@@ -24,7 +24,12 @@ const range = ref<[string, string]>([
 ]);
 const instructions = ref("");
 const description = ref("");
-const requestKey = ref(crypto.randomUUID());
+function newRequestKey() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+const requestKey = ref(newRequestKey());
 const uploading = ref(false);
 const members = useQuery({
   queryKey: computed(() => ["members", workspaceID.value]),
@@ -35,7 +40,7 @@ const members = useQuery({
 watch(
   [type, target, range, instructions, description, file],
   () => {
-    requestKey.value = crypto.randomUUID();
+    requestKey.value = newRequestKey();
   },
   { deep: true },
 );
@@ -95,7 +100,7 @@ async function upload() {
             form,
             { "Idempotency-Key": requestKey.value },
           );
-    requestKey.value = crypto.randomUUID();
+    requestKey.value = newRequestKey();
     ElMessage.success(
       type.value !== "excel" ? "识别任务已创建" : "导入预览已生成",
     );
