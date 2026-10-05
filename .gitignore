@@ -21,3 +21,5 @@ shiftory-web/test-results/
 !/config/*.example.yaml
 
 /var/logs/
+/bin/
+/.agent/tasks/
