@@ -27,6 +27,12 @@ it("shows all members initially and after clearing the member filter", async () 
   } });
   try {
     await vi.waitFor(() => expect(wrapper.get(".calendar-cell").text()).toContain("工作 2"));
+    expect(wrapper.findAll(".calendar-weekdays span").map((item) => item.text())).toEqual([
+      "周一", "周二", "周三", "周四", "周五", "周六", "周日",
+    ]);
+    expect(wrapper.get(".calendar-cell .date").text()).toBe("1");
+    expect((wrapper.get(".calendar-cell").element as HTMLElement).style.gridColumn).toBe("4");
+    expect((wrapper.get(".calendar-cell").element as HTMLElement).style.gridRow).toBe("1");
     expect(get.mock.calls.some(([path]) => path.includes("/calendar?") && !path.includes("memberIds="))).toBe(true);
     const select = wrapper.findComponent({ name: "ElSelect" });
     expect(select.props("modelValue")).toEqual([]);

@@ -127,29 +127,35 @@ async function saveBatch() {
       >
     </div>
     <div class="surface-card card-padding">
-      <div class="schedule-grid">
-        <button
-          v-for="cell in calendar"
-          :key="cell.date"
-          class="calendar-cell"
-          :class="[
-            { rest: cell.schedule?.status === 'REST', missing: !cell.schedule },
-          ]"
-          @click="edit(cell.date)"
-        >
-          <span class="date">{{ cell.day }}</span
-          ><span class="badge">{{
-            cell.schedule?.status === "REST"
-              ? "休息"
-              : (cell.schedule?.segments[0]?.shiftName ??
-                (cell.schedule ? "工作" : "未排班"))
-          }}</span
-          ><small
-            v-if="cell.schedule"
-            style="display: block; margin-top: 7px; color: var(--muted)"
-            >{{ cell.schedule.sourceType }}</small
+      <div class="calendar-scroll">
+        <div class="calendar-weekdays">
+          <span v-for="weekday in ['周一', '周二', '周三', '周四', '周五', '周六', '周日']" :key="weekday">{{ weekday }}</span>
+        </div>
+        <div class="schedule-grid">
+          <button
+            v-for="cell in calendar"
+            :key="cell.date"
+            class="calendar-cell"
+            :style="{ gridColumn: (dayjs(cell.date).day() + 6) % 7 + 1, gridRow: Math.floor(((month.startOf('month').day() + 6) % 7 + cell.day - 1) / 7) + 1 }"
+            :class="[
+              { rest: cell.schedule?.status === 'REST', missing: !cell.schedule },
+            ]"
+            @click="edit(cell.date)"
           >
-        </button>
+            <span class="date">{{ cell.day }}</span
+            ><span class="badge">{{
+              cell.schedule?.status === "REST"
+                ? "休息"
+                : (cell.schedule?.segments[0]?.shiftName ??
+                  (cell.schedule ? "工作" : "未排班"))
+            }}</span
+            ><small
+              v-if="cell.schedule"
+              style="display: block; margin-top: 7px; color: var(--muted)"
+              >{{ cell.schedule.sourceType }}</small
+            >
+          </button>
+        </div>
       </div>
     </div>
     <el-drawer destroy-on-close v-model="editorOpen" title="编辑日排班" size="min(520px, 96vw)"

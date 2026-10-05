@@ -456,10 +456,21 @@ a {
 .muted {
   color: var(--muted);
 }
+.calendar-scroll {
+  overflow-x: auto;
+}
+.calendar-weekdays,
 .schedule-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
+  min-width: 560px;
+}
+.calendar-weekdays {
+  margin-bottom: 12px;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 600;
 }
 .calendar-cell {
   min-height: 108px;
@@ -656,9 +667,6 @@ a {
   .grid-3,
   .grid-2 {
     grid-template-columns: 1fr;
-  }
-  .schedule-grid {
-    grid-template-columns: repeat(2, 1fr);
   }
   .page-header {
     align-items: flex-start;

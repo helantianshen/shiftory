@@ -106,24 +106,30 @@ function scheduleDetail(member: CalendarMemberDay) {
       <el-checkbox v-model="onlyMissing">只看数据缺失</el-checkbox>
     </div>
     <section class="surface-card card-padding">
-      <div class="schedule-grid">
-        <button
-          v-for="day in days"
-          :key="day.date"
-          class="calendar-cell"
-          :class="{ 'all-rest': day.allRest, missing: day.missing > 0, overdue: day.date < today }"
-          @click="open(day)"
-        >
-          <span class="date">{{ dayjs(day.date).date() }}</span>
-          <span class="badge">{{
-            day.allRest ? "全部休息" : `工作 ${day.working} · 休息 ${day.rest}`
-          }}</span>
-          <small
-            v-if="day.missing"
-            style="display: block; margin-top: 7px; color: var(--warning)"
-            >缺失 {{ day.missing }} 人</small
+      <div class="calendar-scroll">
+        <div class="calendar-weekdays">
+          <span v-for="weekday in ['周一', '周二', '周三', '周四', '周五', '周六', '周日']" :key="weekday">{{ weekday }}</span>
+        </div>
+        <div class="schedule-grid">
+          <button
+            v-for="day in days"
+            :key="day.date"
+            class="calendar-cell"
+            :style="{ gridColumn: (dayjs(day.date).day() + 6) % 7 + 1, gridRow: Math.floor(((dayjs(day.date).startOf('month').day() + 6) % 7 + dayjs(day.date).date() - 1) / 7) + 1 }"
+            :class="{ 'all-rest': day.allRest, missing: day.missing > 0, overdue: day.date < today }"
+            @click="open(day)"
           >
-        </button>
+            <span class="date">{{ dayjs(day.date).date() }}</span>
+            <span class="badge">{{
+              day.allRest ? "全部休息" : `工作 ${day.working} · 休息 ${day.rest}`
+            }}</span>
+            <small
+              v-if="day.missing"
+              style="display: block; margin-top: 7px; color: var(--warning)"
+              >缺失 {{ day.missing }} 人</small
+            >
+          </button>
+        </div>
       </div>
     </section>
     <el-drawer
