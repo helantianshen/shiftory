@@ -40,8 +40,15 @@ type Config struct {
 }
 
 type LogConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
+	Level  string        `mapstructure:"level"`
+	Format string        `mapstructure:"format"`
+	File   LogFileConfig `mapstructure:"file"`
+}
+
+type LogFileConfig struct {
+	Path       string `mapstructure:"path"`
+	MaxSizeMB  int    `mapstructure:"max_size_mb"`
+	MaxBackups int    `mapstructure:"max_backups"`
 }
 
 type ServerConfig struct {
@@ -165,6 +172,7 @@ func defaultValues(environment string) map[string]any {
 	}
 	return map[string]any{
 		"log.level": level, "log.format": format,
+		"log.file.path": "./var/logs/shiftory.log", "log.file.max_size_mb": 20, "log.file.max_backups": 2,
 		"server.port": 8080, "server.web_dir": "../shiftory-web/dist", "server.public_origin": "http://localhost:5173",
 		"postgres.host": "127.0.0.1", "postgres.port": 5432, "postgres.database": "shiftory", "postgres.user": "shiftory", "postgres.password": "123456", "postgres.sslmode": "disable",
 		"storage.upload_dir": "./uploads", "jwt.issuer": "shiftory-local", "jwt.audience": "shiftory-web", "jwt.private_key_file": "./var/jwt-private.pem", "jwt.public_key_file": "./var/jwt-public.pem",

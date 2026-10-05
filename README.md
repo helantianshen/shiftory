@@ -80,9 +80,26 @@ Copy-Item config/production.example.yaml config/production.yaml
 
 ### 环境与日志
 
-启动参数 `--env` 支持 `development` 和 `production`，默认是 `production`。环境选择只影响自动发现的配置文件和日志默认值：开发环境默认 `debug` + 文本日志，生产环境默认 `info` + JSON 日志。可通过 `SHIFTORY_LOG_LEVEL=debug|info|warn|error` 和 `SHIFTORY_LOG_FORMAT=text|json` 单独覆盖。API 启动时会打印配置摘要、数据库、JWT、Worker 和监听地址；每次 HTTP 调用会记录请求 ID、方法、路径、状态和耗时，图片上传还会记录校验、存储和任务创建阶段。日志不会记录 API Key、令牌或图片内容。
+启动参数 `--env` 支持 `development` 和 `production`，默认 `production`。开发环境保持原有行为，默认 `debug` + 文本控制台，也可以用 `log.format` 选择 JSON。生产环境固定同时输出可读控制台与 JSON 文件，两者使用相同的 `log.level`，默认 `info`；`log.format` 不改变生产双输出策略。可通过 `SHIFTORY_LOG_LEVEL=debug|info|warn|error` 覆盖等级，修改配置后需重启。
 
-控制台日志使用 `log.format: text`，按时间、级别、消息和有序字段展示。DEBUG 为青色、INFO 为绿色、WARN 为黄色、ERROR 为红色，字段使用“标签: 值”，HTTP 请求优先展示方法、路径、状态和耗时，AI 路由优先展示供应商和模型。设置 `NO_COLOR=1` 或 `TERM=dumb` 可关闭颜色；重定向文本日志时可使用 `NO_COLOR=1`。`log.format: json` 继续输出无颜色的结构化日志。
+控制台继续按时间、级别、消息和有序“标签: 值”展示，保留颜色和 HTTP／AI 字段排序；`NO_COLOR=1` 或 `TERM=dumb` 关闭颜色。文件每行是一条无颜色 JSON 日志。日志不记录 API Key、令牌或图片内容。
+
+生产日志文件配置：
+
+```yaml
+log:
+  level: info
+  file:
+    path: ./var/logs/shiftory.log
+    max_size_mb: 20
+    max_backups: 2
+```
+
+`max_size_mb` 以 MiB（1024 × 1024 字节）计量；`max_backups` 不包含当前文件，允许为 0。默认当前文件与两个备份的内容总大小不超过 60 MiB，备份为 `shiftory.log.1`（最新）、`shiftory.log.2`。每次写入前检查大小，先同步删除最旧备份，再轮转，不等待定时任务或异步清理；备份数为 0 时先清空当前文件。启动时清空超限当前文件，并删除超限或多余编号备份。只管理当前文件及其规范数字后缀备份，不清理其他文件。
+
+超大单条日志不写文件，控制台仍保留原日志并报告错误。轮转或文件写入失败后停止文件写入、继续控制台输出并报告错误，修复后需重启；初始化无法创建或清理日志文件时启动失败。文件同步写入，不使用后台日志队列；文件限额控制文件内容大小，不代表整个进程的内存限制。
+
+对应环境变量为 `SHIFTORY_LOG_FILE_PATH`、`SHIFTORY_LOG_FILE_MAX_SIZE_MB`、`SHIFTORY_LOG_FILE_MAX_BACKUPS`。路径相对进程工作目录。生产迁移命令使用同目录下的 `shiftory.migrate.log`，限额独立计算；API 和迁移两套文件默认合计最多 120 MiB。每套轮转文件只能由一个进程写入，不允许外部进程修改或共用同一路径。开发迁移命令保持原有标准日志输出。
 
 AI 异步处理运行在 API 进程内，Eino 负责模型调用，Asynq 使用 Redis 调度任务，PostgreSQL 保存任务、Outbox、执行记录和预览。`tasks.concurrency` 控制任务并发，各供应商的 `max_concurrency` 通过 Redis 在进程间共享。关闭 `ai.enabled` 时停止新 AI 请求及消费，已有草稿仍可审查。
 
@@ -135,6 +152,7 @@ COMPOSE_DISABLE_ENV_FILE=1 docker compose config --quiet
 Compose 自身具有隐式读取根目录 `.env` 的行为，因此部署命令显式设置 `COMPOSE_DISABLE_ENV_FILE=1`。这不会禁用前端 Vite 读取 `shiftory-web/.env*`。
 
 后端通过 Viper 在启动时将 YAML、非空进程环境变量和默认值解码为配置结构体；不监听文件或自动重载，配置修改后需重启进程。
+
 
 ## AI 导入与文字排班
 

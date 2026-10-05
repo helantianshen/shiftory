@@ -38,35 +38,52 @@ func main() {
 	if cfg.MigrateLegacyAI {
 		log.Fatal("--migrate-ai-jobs is only valid for cmd/migrate")
 	}
-	logger, err := logging.New(cfg.Log.Level, cfg.Log.Format, nil)
+	logger, logFile, err := logging.New(cfg.Environment, cfg.Log, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+	if logFile != nil {
+		defer logFile.Close()
+	}
 	slog.SetDefault(logger)
-	logger.Info("configuration loaded", "environment", cfg.Environment, "log_level", cfg.Log.Level, "log_format", cfg.Log.Format, "http_addr", cfg.Address(), "ai_enabled", cfg.AI.Enabled)
+	consoleFormat := cfg.Log.Format
+	if cfg.Environment == "production" {
+		consoleFormat = "text"
+	}
+	fatal := func(value any) {
+		if cfg.Environment == "production" {
+			logger.Error("process failed", "error", value)
+			if logFile != nil {
+				_ = logFile.Close()
+			}
+			os.Exit(1)
+		}
+		log.Fatal(value)
+	}
+	logger.Info("configuration loaded", "environment", cfg.Environment, "log_level", cfg.Log.Level, "log_format", consoleFormat, "http_addr", cfg.Address(), "ai_enabled", cfg.AI.Enabled)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// 建立数据库、上传目录和持久化签名密钥，依赖失败时不开放 HTTP 服务
 	db, err := database.Open(ctx, cfg.Postgres.DSN())
 	if err != nil {
 		logger.Error("database connection failed", "error", err)
-		log.Fatal(err)
+		fatal(err)
 	}
 	logger.Info("database connected")
 	defer db.Close()
 	// 表结构同步成功后才装配 Worker 并开放 HTTP 服务
 	if err := database.Migrate(db); err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	store, err := storage.NewLocal(cfg.Storage.UploadDir)
 	if err != nil {
 		logger.Error("file storage initialization failed", "error", err)
-		log.Fatal(err)
+		fatal(err)
 	}
 	privateKey, publicKey, err := jwtkeys.LoadOrCreate(cfg.JWT.PrivateKeyFile, cfg.JWT.PublicKeyFile)
 	if err != nil {
 		logger.Error("JWT key initialization failed", "error", err)
-		log.Fatal(err)
+		fatal(err)
 	}
 	tokens := auth.NewTokenManager(privateKey, publicKey, "shiftory-ed25519-v1", cfg.JWT.Issuer, cfg.JWT.Audience, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	redisClient := redis.NewClient(importjob.RedisOptions(cfg.Redis))
@@ -78,12 +95,12 @@ func main() {
 	if cfg.AI.Enabled {
 		recognizer, e := ai.New(ctx, cfg.AI, redisClient)
 		if e != nil {
-			log.Fatal("AI workflow configuration failed")
+			fatal("AI workflow configuration failed")
 		}
 		processor := importjob.NewImageProcessorWithLogger(db, store, recognizer, "routed", logger)
 		queue = importjob.NewQueue(db, cfg, processor, redisClient, logger)
 		if e = queue.Start(); e != nil {
-			log.Fatal("AI queue initialization failed")
+			fatal("AI queue initialization failed")
 		}
 		go func() { defer close(dispatcherDone); queue.Dispatch(dispatcherCtx) }()
 	} else {
@@ -102,7 +119,7 @@ func main() {
 	}, Logger: logger})
 	if err != nil {
 		logger.Error("HTTP handler initialization failed", "error", err)
-		log.Fatal(err)
+		fatal(err)
 	}
 	server := &http.Server{Addr: cfg.Address(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
 	// HTTP 监听在后台运行，异常退出会取消共享上下文以触发停机

@@ -38,7 +38,7 @@
 - 后端 YAML 按 log、server、postgres、jwt、ai、redis、tasks、storage 分组；worker 仅保留旧字段兼容，环境变量采用 SHIFTORY_<分组>_<字段>。server.port 指定监听端口；postgres 使用 host、port、database、user、password、sslmode，连接串统一编码，会话时区固定 UTC。不接受运行时 DSN 或平铺 YAML 键。
 - 未显式指定配置时，按工作目录、父目录、祖父目录查找首个 `config/<模式>.yaml`；文件不合并。显式路径缺失、非法 YAML、未知键或非法值会报错。相对路径以进程工作目录为基准。
 - 样例配置只保存可分发值；实际 YAML、JWT 私钥、模型密钥与上传文件不能进入版本控制。生产部署需要持久化上传目录与 JWT 密钥。
-- 开发日志默认 `debug` 与文本格式，生产默认 `info` 与 JSON；支持显式覆盖。请求日志包含请求 ID、路径、状态和耗时，不记录令牌、API Key 或图片内容。
+- 开发日志默认 `debug` 与文本格式并保留可选 JSON；生产控制台固定文本、文件固定 JSON，两者共用 `log.level`（默认 `info`）。文件按 `log.file.path/max_size_mb/max_backups` 同步轮转，超限写前清理；API 与 migrate 使用独立文件。请求日志包含请求 ID、路径、状态和耗时，不记录令牌、API Key 或图片内容。
 - PowerShell 开发启动器可预先同步表结构，再启动 API 与前端；API 自身也会执行同步。`-ValidateOnly` 检查工具和配置路径，不能替代 Go 加载器的配置校验。
 - Linux 启动脚本透传模式与配置参数；systemd 使用显式 YAML 路径。Docker 入口先迁移再启动 API，Compose 使用 `COMPOSE_DISABLE_ENV_FILE=1` 避免额外隐式加载根目录 env 文件。
 

@@ -77,6 +77,8 @@ sudo systemctl status shiftory --no-pager
 
 直接通过 IP 访问时，确保服务器防火墙或云安全组允许配置的应用端口，默认是 18763。
 
+生产日志默认写入部署目录的 `var/logs/shiftory.log`，控制台文本仍可通过 journalctl 查看。文件大小和备份数在 `config/production.yaml` 的 `log.file.max_size_mb` 与 `max_backups` 配置，默认每文件 20 MiB、两个备份，共 60 MiB；迁移日志 `shiftory.migrate.log` 独立计算限额。文件轮转不会限制 systemd journal 的存储占用。默认日志目录位于安装脚本已授权的 `var` 下；自定义路径需由服务用户可写，并符合 systemd 的目录限制。
+
 ## 常用命令
 
 ```bash

@@ -64,8 +64,14 @@ jwt:
   public_key_file: ./var/jwt-public.pem
 # 日志等级与输出格式
 log:
+  # format 仅控制开发模式，生产控制台固定文本，文件固定 JSON
   format: text
   level: debug
+  # 文件配置仅在生产模式生效，MiB 为 1024 × 1024 字节，备份不含当前文件
+  file:
+    path: ./var/logs/shiftory.log
+    max_size_mb: 20
+    max_backups: 2
 # 数据库连接参数，数据库使用 UTF8 编码，会话时区固定为 UTC
 postgres:
   database: shiftory

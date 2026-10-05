@@ -19,3 +19,5 @@ shiftory-web/test-results/
 
 /config/*.yaml
 !/config/*.example.yaml
+
+/var/logs/

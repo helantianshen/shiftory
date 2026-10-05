@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"strings"
@@ -19,6 +20,9 @@ func (c *Config) validate() error {
 	}
 	if c.Log.Format != "text" && c.Log.Format != "json" {
 		return errors.New("invalid log.format: expected text or json")
+	}
+	if strings.TrimSpace(c.Log.File.Path) == "" || c.Log.File.MaxSizeMB < 1 || int64(c.Log.File.MaxSizeMB) > math.MaxInt64/(1024*1024) || c.Log.File.MaxBackups < 0 || int64(c.Log.File.MaxBackups) == math.MaxInt64 || (int64(c.Log.File.MaxBackups)+1) > math.MaxInt64/(int64(c.Log.File.MaxSizeMB)*1024*1024) {
+		return errors.New("invalid log.file: expected a path, positive max_size_mb and nonnegative max_backups within total size range")
 	}
 	for key, value := range map[string]int{"server.port": c.Server.Port, "postgres.port": c.Postgres.Port, "redis.port": c.Redis.Port} {
 		if value < 1 || value > 65535 {
