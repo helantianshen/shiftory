@@ -193,6 +193,7 @@ async function saveBatch() {
       v-model="batchOpen"
       title="批量设置排班"
       width="min(520px, 94vw)"
+      @closed="batchDates = []; batchStatus = 'REST'"
       ><el-form label-position="top"
         ><el-form-item label="日期"
           ><el-date-picker

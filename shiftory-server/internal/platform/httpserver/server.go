@@ -319,12 +319,8 @@ func (s *server) login(c *gin.Context) {
 	success(c, http.StatusOK, gin.H{"accessToken": pair.AccessToken, "accessExpiresAt": pair.AccessExpiry, "user": userResponse(user)})
 }
 
-// refresh 通过来源和 CSRF 校验后轮换刷新 Cookie，拒绝时清除刷新 Cookie
+// refresh 通过 CSRF 校验后轮换刷新 Cookie，令牌被拒绝时清除刷新 Cookie
 func (s *server) refresh(c *gin.Context) {
-	if !s.validOrigin(c) {
-		failure(c, http.StatusForbidden, "INVALID_ORIGIN", "请求来源不受信任", nil)
-		return
-	}
 	if !s.validCSRF(c) {
 		failure(c, http.StatusForbidden, "INVALID_CSRF", "CSRF 校验失败", nil)
 		return
@@ -350,10 +346,6 @@ func (s *server) refresh(c *gin.Context) {
 
 // logout 尝试撤销刷新令牌族并清除会话 Cookie
 func (s *server) logout(c *gin.Context) {
-	if !s.validOrigin(c) {
-		failure(c, http.StatusForbidden, "INVALID_ORIGIN", "请求来源不受信任", nil)
-		return
-	}
 	if !s.validCSRF(c) {
 		failure(c, http.StatusForbidden, "INVALID_CSRF", "CSRF 校验失败", nil)
 		return
@@ -475,13 +467,6 @@ func (s *server) validCSRF(c *gin.Context) bool {
 	cookie, err := c.Cookie("shiftory_csrf")
 	header := c.GetHeader("X-CSRF-Token")
 	return err == nil && cookie != "" && header != "" && subtle.ConstantTimeCompare([]byte(cookie), []byte(header)) == 1
-}
-
-// validOrigin 接受空 Origin 或与配置公开来源完全一致的 Origin
-func (s *server) validOrigin(c *gin.Context) bool {
-	origin := c.GetHeader("Origin")
-	// 非浏览器客户端通常不发送 Origin，浏览器请求则必须精确匹配公开来源
-	return origin == "" || origin == s.config.Server.PublicOrigin
 }
 
 // clientInfo 提取客户端 IP 和 User-Agent 作为会话记录信息

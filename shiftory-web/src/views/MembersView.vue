@@ -12,7 +12,12 @@ const session = useSessionStore();
 const workspaceID = computed(() => session.currentWorkspace?.id ?? 0);
 const queryClient = useQueryClient();
 const invitationOpen = ref(false);
-const invitation = reactive({ mode: "email", email: "", username: "", role: "MEMBER" });
+const invitation = reactive({
+  mode: "email",
+  email: "",
+  username: "",
+  role: "MEMBER",
+});
 const inviteResult = ref("");
 const members = useQuery({
   enabled: computed(() => workspaceID.value > 0),
@@ -36,9 +41,10 @@ const invitations = useQuery({
 });
 async function createInvite() {
   const role = session.isOwner ? invitation.role : "MEMBER";
-  const payload = invitation.mode === "username"
-    ? { username: invitation.username, role }
-    : { email: invitation.email, role };
+  const payload =
+    invitation.mode === "username"
+      ? { username: invitation.username, role }
+      : { email: invitation.email, role };
   const result = await api.post<{ token: string }>(
     `/workspaces/${workspaceID.value}/invitations`,
     payload,
@@ -83,22 +89,62 @@ async function revoke(id: number) {
       ><Plus :size="16" />邀请成员</el-button
     ></PageHeader
   >
-  <section class="surface-card table-card">
+  <section class="surface-card table-card table-panel">
+    <div class="table-title">
+      <h2>
+        工作区成员
+        <span class="count">{{ members.data.value?.items.length ?? 0 }}</span>
+      </h2>
+      <span>{{ session.currentWorkspace?.name }}</span>
+    </div>
     <el-table :data="members.data.value?.items ?? []"
       ><el-table-column label="成员" min-width="190"
         ><template #default="scope"
-          ><strong>{{ scope.row.displayName }}</strong>
-          <div class="muted">{{ scope.row.email }}</div></template
+          ><div class="member-info">
+            <span class="member-avatar blue">{{
+              scope.row.displayName.slice(0, 1)
+            }}</span>
+            <div>
+              <strong>{{ scope.row.displayName }}</strong>
+              <small>{{ scope.row.email }}</small>
+            </div>
+          </div></template
         ></el-table-column
-      ><el-table-column prop="role" label="角色" width="110" /><el-table-column
-        prop="status"
-        label="状态"
-        width="110"
-      /><el-table-column label="本月完整度" width="130"
+      ><el-table-column prop="role" label="角色" width="110"
+        ><template #default="{ row }"
+          ><span class="role-label" :class="{ owner: row.role === 'OWNER' }">{{
+            row.role === "OWNER"
+              ? "所有者"
+              : row.role === "ADMIN"
+                ? "管理员"
+                : "普通成员"
+          }}</span></template
+        ></el-table-column
+      ><el-table-column prop="status" label="状态" width="110"
+        ><template #default="{ row }"
+          ><span
+            class="status-pill"
+            :class="row.status === 'ACTIVE' ? 'green' : 'neutral'"
+            ><i></i
+            >{{
+              row.status === "ACTIVE"
+                ? "正常"
+                : row.status === "DISABLED"
+                  ? "已禁用"
+                  : "已移除"
+            }}</span
+          ></template
+        ></el-table-column
+      ><el-table-column label="本月完整度" width="130"
         ><template #default="scope"
           ><el-progress
             :percentage="scope.row.scheduleCompleteness ?? 0"
-            :stroke-width="8" /></template></el-table-column
+            :stroke-width="5"
+            :color="
+              scope.row.scheduleCompleteness === 100
+                ? 'var(--accent)'
+                : 'var(--warning)'
+            " /></template></el-table-column
       ><el-table-column label="最近导入" width="150"
         ><template #default="scope">{{
           scope.row.lastImportAt
@@ -114,6 +160,7 @@ async function revoke(id: number) {
           ><template v-if="scope.row.role !== 'OWNER'"
             ><el-button
               size="small"
+              text
               @click="
                 update(
                   scope.row,
@@ -125,6 +172,7 @@ async function revoke(id: number) {
             ><el-button
               v-if="session.isOwner"
               size="small"
+              text
               @click="
                 update(
                   scope.row,
@@ -137,30 +185,53 @@ async function revoke(id: number) {
               }}</el-button
             ><el-button
               size="small"
+              text
               type="danger"
-              plain
               @click="remove(scope.row)"
               >移除</el-button
             ></template
-          ><span v-else class="muted"
+          ><span v-else class="owner-note"
             ><UserCog :size="15" />所有者</span
           ></template
         ></el-table-column
       ></el-table
     >
   </section>
-  <section class="surface-card table-card" style="margin-top: 18px">
-    <div class="card-padding"><h2 class="section-title">邀请记录</h2></div>
+  <section class="surface-card table-card table-panel invitations-panel">
+    <div class="table-title">
+      <h2>
+        邀请记录
+        <span class="count">{{
+          invitations.data.value?.items.length ?? 0
+        }}</span>
+      </h2>
+    </div>
     <el-table :data="invitations.data.value?.items ?? []"
-      ><el-table-column label="目标" min-width="200"><template #default="scope"><span v-if="scope.row.username">{{ scope.row.username }}（用户名）</span><span v-else>{{ scope.row.email }}</span></template></el-table-column><el-table-column
-        prop="role"
-        label="角色"
-        width="100"
-      /><el-table-column
+      ><el-table-column label="目标" min-width="200"
+        ><template #default="scope"
+          ><span v-if="scope.row.username"
+            >{{ scope.row.username }}（用户名）</span
+          ><span v-else>{{ scope.row.email }}</span></template
+        ></el-table-column
+      ><el-table-column prop="role" label="角色" width="100" /><el-table-column
         prop="status"
         label="状态"
         width="110"
-      /><el-table-column label="操作" width="100"
+        ><template #default="{ row }"
+          ><span
+            class="status-pill"
+            :class="row.status === 'ACTIVE' ? 'green' : 'neutral'"
+            ><i></i
+            >{{
+              row.status === "ACTIVE"
+                ? "正常"
+                : row.status === "DISABLED"
+                  ? "已禁用"
+                  : "已移除"
+            }}</span
+          ></template
+        ></el-table-column
+      ><el-table-column label="操作" width="100"
         ><template #default="scope"
           ><el-button
             v-if="scope.row.status === 'PENDING'"
@@ -175,7 +246,21 @@ async function revoke(id: number) {
   </section>
   <el-dialog v-model="invitationOpen" title="邀请成员" width="min(500px,94vw)"
     ><el-form label-position="top"
-      ><el-form-item label="邀请方式"><el-radio-group v-model="invitation.mode"><el-radio-button value="email">邮箱</el-radio-button><el-radio-button value="username">用户名</el-radio-button></el-radio-group></el-form-item><el-form-item :label="invitation.mode === 'username' ? '用户名' : '邮箱'"><el-input v-if="invitation.mode === 'username'" v-model="invitation.username" placeholder="输入已注册用户名" /><el-input v-else v-model="invitation.email" placeholder="输入邮箱地址" /></el-form-item
+      ><el-form-item label="邀请方式"
+        ><el-radio-group v-model="invitation.mode"
+          ><el-radio-button value="email">邮箱</el-radio-button
+          ><el-radio-button value="username"
+            >用户名</el-radio-button
+          ></el-radio-group
+        ></el-form-item
+      ><el-form-item :label="invitation.mode === 'username' ? '用户名' : '邮箱'"
+        ><el-input
+          v-if="invitation.mode === 'username'"
+          v-model="invitation.username"
+          placeholder="输入已注册用户名" /><el-input
+          v-else
+          v-model="invitation.email"
+          placeholder="输入邮箱地址" /></el-form-item
       ><el-form-item label="角色"
         ><el-select v-model="invitation.role"
           ><el-option label="普通成员" value="MEMBER" /><el-option

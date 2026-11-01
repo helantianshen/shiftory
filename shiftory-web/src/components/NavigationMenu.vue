@@ -33,7 +33,10 @@ const administration = [
 ];
 const groups = computed(() => [
   { label: "个人", items: personal },
-  { label: "工作区", items: session.isAdmin ? [...workspace, ...administration] : workspace },
+  {
+    label: "工作区",
+    items: session.isAdmin ? [...workspace, ...administration] : workspace,
+  },
 ]);
 </script>
 <template>
@@ -41,9 +44,19 @@ const groups = computed(() => [
     <RouterLink to="/overview" class="navigation-item">
       <LayoutDashboard :size="18" /><span>概览</span>
     </RouterLink>
-    <section v-for="group in groups" :key="group.label" class="navigation-group" :aria-label="group.label">
+    <section
+      v-for="group in groups"
+      :key="group.label"
+      class="navigation-group"
+      :aria-label="group.label"
+    >
       <h2 class="navigation-group-title">{{ group.label }}</h2>
-      <RouterLink v-for="item in group.items" :key="item.to" :to="item.to" class="navigation-item">
+      <RouterLink
+        v-for="item in group.items"
+        :key="item.to"
+        :to="item.to"
+        class="navigation-item"
+      >
         <component :is="item.icon" :size="18" /><span>{{ item.label }}</span>
       </RouterLink>
     </section>

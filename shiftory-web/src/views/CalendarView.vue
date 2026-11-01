@@ -75,53 +75,90 @@ function scheduleDetail(member: CalendarMemberDay) {
       title="团队日历"
       description="未选择成员时显示全部成员；共同休息仅在查询范围内所有成员明确休息且没有缺失时标记。"
     />
-    <div class="toolbar">
-      <el-button circle @click="month = month.subtract(1, 'month')"
-        ><ArrowLeft :size="16"
-      /></el-button>
-      <strong>{{ month.format("YYYY年 M月") }}</strong>
-      <el-button circle @click="month = month.add(1, 'month')"
-        ><ArrowRight :size="16"
-      /></el-button>
-      <el-select
-        v-model="selectedMembers"
-        multiple
-        collapse-tags
-        clearable
-        filterable
-        placeholder="全部成员（可选择筛选）"
-      >
-        <el-option
-          v-for="member in members.data.value?.items ?? []"
-          :key="member.id"
-          :label="
-            member.status === 'ACTIVE'
-              ? member.displayName
-              : `${member.displayName}（历史成员）`
-          "
-          :value="member.id"
-        />
-      </el-select>
-      <el-checkbox v-model="onlyAllRest">只看全部休息</el-checkbox>
-      <el-checkbox v-model="onlyMissing">只看数据缺失</el-checkbox>
-    </div>
-    <section class="surface-card card-padding">
+    <section class="surface-card calendar-panel">
+      <div class="toolbar calendar-toolbar">
+        <div class="month-switch">
+          <el-button
+            circle
+            aria-label="上个月"
+            @click="month = month.subtract(1, 'month')"
+            ><ArrowLeft :size="16"
+          /></el-button>
+          <strong>{{ month.format("YYYY年 M月") }}</strong>
+          <el-button
+            circle
+            aria-label="下个月"
+            @click="month = month.add(1, 'month')"
+            ><ArrowRight :size="16"
+          /></el-button>
+        </div>
+        <el-select
+          class="member-select"
+          v-model="selectedMembers"
+          multiple
+          collapse-tags
+          clearable
+          filterable
+          placeholder="全部成员（可选择筛选）"
+        >
+          <el-option
+            v-for="member in members.data.value?.items ?? []"
+            :key="member.id"
+            :label="
+              member.status === 'ACTIVE'
+                ? member.displayName
+                : `${member.displayName}（历史成员）`
+            "
+            :value="member.id"
+          />
+        </el-select>
+        <el-checkbox v-model="onlyAllRest">只看全部休息</el-checkbox>
+        <el-checkbox v-model="onlyMissing">只看数据缺失</el-checkbox>
+      </div>
       <div class="calendar-scroll">
         <div class="calendar-weekdays">
-          <span v-for="weekday in ['周一', '周二', '周三', '周四', '周五', '周六', '周日']" :key="weekday">{{ weekday }}</span>
+          <span
+            v-for="weekday in [
+              '周一',
+              '周二',
+              '周三',
+              '周四',
+              '周五',
+              '周六',
+              '周日',
+            ]"
+            :key="weekday"
+            >{{ weekday }}</span
+          >
         </div>
         <div class="schedule-grid">
           <button
             v-for="day in days"
             :key="day.date"
             class="calendar-cell"
-            :style="{ gridColumn: (dayjs(day.date).day() + 6) % 7 + 1, gridRow: Math.floor(((dayjs(day.date).startOf('month').day() + 6) % 7 + dayjs(day.date).date() - 1) / 7) + 1 }"
-            :class="{ 'all-rest': day.allRest, missing: day.missing > 0, overdue: day.date < today }"
+            :style="{
+              gridColumn: ((dayjs(day.date).day() + 6) % 7) + 1,
+              gridRow:
+                Math.floor(
+                  (((dayjs(day.date).startOf('month').day() + 6) % 7) +
+                    dayjs(day.date).date() -
+                    1) /
+                    7,
+                ) + 1,
+            }"
+            :class="{
+              'all-rest': day.allRest,
+              missing: day.missing > 0,
+              overdue: day.date < today,
+            }"
+            :aria-label="`${day.date} 成员详情`"
             @click="open(day)"
           >
             <span class="date">{{ dayjs(day.date).date() }}</span>
             <span class="badge">{{
-              day.allRest ? "全部休息" : `工作 ${day.working} · 休息 ${day.rest}`
+              day.allRest
+                ? "全部休息"
+                : `工作 ${day.working} · 休息 ${day.rest}`
             }}</span>
             <small
               v-if="day.missing"
@@ -130,6 +167,10 @@ function scheduleDetail(member: CalendarMemberDay) {
             >
           </button>
         </div>
+      </div>
+      <div class="calendar-bottom">
+        <span>工作、休息与缺失数据分别显示</span
+        ><span>点击日期查看成员排班</span>
       </div>
     </section>
     <el-drawer
